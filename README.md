@@ -1,4 +1,4 @@
-<div align="center">
+za<div align="center">
 
 # Xrd-eXternalrEsolve
 
@@ -38,7 +38,7 @@
 | 功能 | 说明 |
 |:-----|:-----|
 | **Header-Only** | 单一入口 `#include <xrd.hpp>`，无需编译库文件 |
-| **全自动偏移发现** | `AutoInit()` 六阶段扫描 GObjects / GNames / GWorld / ProcessEvent / AppendString / DebugCanvas / PlayerController / Pawn / CameraManager 等全部关键偏移 |
+| **全自动偏移发现** | `AutoInit()` 六阶段扫描 GObjects / GNames / GWorld / ProcessEvent / AppendString / GCanvas / PlayerController / Pawn / CameraManager 等全部关键偏移 |
 | **访问器抽象** | `IMemoryAccessor` 接口解耦算法与内存后端，默认提供 WinAPI 实现（`ReadProcessMemory`），可扩展驱动后端 |
 | **线程安全** | 名称缓存/属性偏移缓存均使用 `shared_mutex`，支持多线程并发读取 |
 | **SDK 导出** | 生成与 Dumper-7 格式对齐的 CppSDK，含 `#pragma pack` / `alignas` / trailing padding |
@@ -74,7 +74,7 @@
 |  | `ReadActorFieldFloat(actor, propName)` | 通过属性名读取 float 字段 |
 | **坐标 / W2S** | `GetActorWorldPos(actor, outPos)` | 获取 Actor 世界坐标 |
 |  | `WorldToScreen(pos, w, h, outScreen)` | 世界坐标转屏幕坐标 |
-|  | `GetVPMatrix(outMatrix)` | 通过 DebugCanvas 链路读取 ViewProjection 矩阵 |
+|  | `GetVPMatrix(outMatrix)` | 通过 GCanvas 链路读取 ViewProjection 矩阵 |
 | **骨骼** | `GetBoneWorldLocation(mesh, index, outPos)` | 获取单根骨骼世界坐标 |
 |  | `GetAllBoneWorldLocations(mesh, vp, w, h, ...)` | 批量获取所有骨骼坐标 + 屏幕投影 |
 |  | `GetFilteredBoneWorldLocations(mesh, indices, ...)` | 按索引列表过滤式读取骨骼 |
@@ -219,7 +219,7 @@ AutoInit()
 │   ├─ ProcessEvent VTable 索引扫描
 │   ├─ AppendString 扫描
 │   ├─ FVector 精度检测 (float / double)
-│   └─ DebugCanvasObject 定位 (ViewProjection 矩阵链路)
+│   └─ GCanvas 定位 (ViewProjection 矩阵链路)
 │
 └─ Phase 6: World 链偏移反射发现
     ├─ UWorld::OwningGameInstance
@@ -283,7 +283,7 @@ Xrd-eXternalrEsolve/
 │       │   ├── scan_uclass_offsets.hpp      #   UClass 偏移
 │       │   ├── scan_process_event.hpp       #   ProcessEvent VTable 扫描
 │       │   ├── scan_append_string.hpp       #   AppendString 扫描
-│       │   ├── scan_debug_canvas.hpp        #   DebugCanvas 扫描
+│       │   ├── scan_debug_canvas.hpp        #   GCanvas 扫描
 │       │   ├── scan_world.hpp               #   GWorld 定位
 │       │   ├── scan_bones.hpp               #   骨骼偏移扫描
 │       │   └── fvector_detect.hpp           #   Float/Double 精度检测
