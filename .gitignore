@@ -1,0 +1,31 @@
+# 编译产物
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.dll
+*.exp
+
+# 输出目录
+bin/
+obj/
+x64/
+Debug/
+Release/
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.suo
+*.sdf
+*.opensdf
+*.cachefile
+
+# 生成的 SDK 输出
+CppSDK/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
