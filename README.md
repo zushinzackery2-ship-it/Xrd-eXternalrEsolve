@@ -24,7 +24,7 @@
 > [!NOTE]
 > **版本兼容性说明**  
 > 本项目面向 Unreal Engine 4/5（Windows x64）。不同 UE 版本在部分结构偏移与布局上存在差异，AutoInit 会自动适配。  
-> SDK 导出格式对齐 [Dumper-7 (Rei-Dumper)](https://github.com/Starter-Pack/Dumper-7)，包含正确的 `#pragma pack` / `alignas` / trailing padding 处理。
+> SDK 导出格式对齐 [Dumper-7](https://github.com/Encryqed/Dumper-7)，包含正确的 `#pragma pack` / `alignas` / trailing padding 处理。
 
 > [!IMPORTANT]
 > **代码重构说明**  
@@ -334,7 +334,7 @@ Xrd-eXternalrEsolve/
 | GNames 未找到 | NamePool 分块大小不同 | 检查 ChunkSize (0x2000 / 0x4000) |
 | GetAPawn 返回 0 | GWorld 未找到或玩家未 Spawn | 确认游戏已进入关卡 |
 | 骨骼位置异常 | Double/Float 检测不准 | 确认 `bUseDoublePrecision` |
-| SDK padding 不对齐 | MinAlignment 读取偏差 | 对比 Rei-Dumper 输出排查 |
+| SDK padding 不对齐 | MinAlignment 读取偏差 | 对比 Dumper-7 输出排查 |
 | 多线程崩溃 | 旧版本缓存无锁 | 更新到最新版（已加 shared_mutex） |
 
 ---
