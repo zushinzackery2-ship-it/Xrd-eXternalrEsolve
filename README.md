@@ -38,7 +38,7 @@
 | 功能 | 说明 |
 |:-----|:-----|
 | **Header-Only** | 单一入口 `#include <xrd.hpp>`，无需编译库文件 |
-| **全自动偏移发现** | `AutoInit()` 六阶段扫描 GObjects / GNames / GWorld / ProcessEvent / AppendString 等全部关键偏移 |
+| **全自动偏移发现** | `AutoInit()` 六阶段扫描 GObjects / GNames / GWorld / ProcessEvent / AppendString / DebugCanvas / PlayerController / Pawn / CameraManager 等全部关键偏移 |
 | **访问器抽象** | `IMemoryAccessor` 接口解耦算法与内存后端，默认提供 WinAPI 实现（`ReadProcessMemory`），可扩展驱动后端 |
 | **线程安全** | 名称缓存/属性偏移缓存均使用 `shared_mutex`，支持多线程并发读取 |
 | **SDK 导出** | 生成与 Dumper-7 格式对齐的 CppSDK，含 `#pragma pack` / `alignas` / trailing padding |
@@ -58,7 +58,7 @@
 |  | `IsInited()` | 是否已初始化 |
 |  | `Mem()` | 返回 `IMemoryAccessor` 引用 |
 |  | `Off()` | 返回偏移结构 `UEOffsets` |
-|  | `SetGObjects(rva)` / `SetGNames(rva)` | 手动设置 RVA（AutoInit 前调用） |
+|  | `SetGObjects(rva)` / `SetGNames(rva)` / `SetGWorld(rva)` | 手动设置 RVA（AutoInit 前调用） |
 | **World** | `GetUWorld()` | 获取 UWorld 指针 |
 |  | `GetPlayerController()` | 链式获取本地 PlayerController |
 |  | `GetAPawn()` | 链式获取本地 Pawn |
@@ -74,6 +74,7 @@
 |  | `ReadActorFieldFloat(actor, propName)` | 通过属性名读取 float 字段 |
 | **坐标 / W2S** | `GetActorWorldPos(actor, outPos)` | 获取 Actor 世界坐标 |
 |  | `WorldToScreen(pos, w, h, outScreen)` | 世界坐标转屏幕坐标 |
+|  | `GetVPMatrix(outMatrix)` | 通过 DebugCanvas 链路读取 ViewProjection 矩阵 |
 | **骨骼** | `GetBoneWorldLocation(mesh, index, outPos)` | 获取单根骨骼世界坐标 |
 |  | `GetAllBoneWorldLocations(mesh, vp, w, h, ...)` | 批量获取所有骨骼坐标 + 屏幕投影 |
 |  | `GetFilteredBoneWorldLocations(mesh, indices, ...)` | 按索引列表过滤式读取骨骼 |
@@ -217,7 +218,8 @@ AutoInit()
 │   ├─ GWorld 定位 (UWorld → PersistentLevel → Actors 指针链验证)
 │   ├─ ProcessEvent VTable 索引扫描
 │   ├─ AppendString 扫描
-│   └─ FVector 精度检测 (float / double)
+│   ├─ FVector 精度检测 (float / double)
+│   └─ DebugCanvasObject 定位 (ViewProjection 矩阵链路)
 │
 └─ Phase 6: World 链偏移反射发现
     ├─ UWorld::OwningGameInstance
@@ -304,12 +306,8 @@ Xrd-eXternalrEsolve/
 │           ├── dump_property_flags.hpp      #   属性标志位
 │           ├── w2s.hpp                      #   WorldToScreen
 │           └── gen/                         #   预生成基础类型头文件 (12 个)
-├── test_dump.cpp                            # AutoInit + DumpSdk 全流程
-├── test_sdk_compile.cpp                     # SDK 头文件编译验证
-├── test_datascan.cpp                        # .data 段静态指针扫描测试
+├── test_dump.cpp                            # AutoInit + DumpSdk 全流程示例
 ├── build_dump.bat                           # 构建脚本
-├── build_sdk_test.bat
-├── build_datascan.bat
 ├── LICENSE                                  # MIT
 └── README.md
 ```
@@ -318,13 +316,11 @@ Xrd-eXternalrEsolve/
 
 ---
 
-## 测试
+## 示例
 
 | 文件 | 用途 | 构建脚本 |
 |:-----|:-----|:---------|
 | `test_dump.cpp` | AutoInit + DumpSdk 全流程 | `build_dump.bat` |
-| `test_sdk_compile.cpp` | 验证生成的 SDK 头文件可编译 | `build_sdk_test.bat` |
-| `test_datascan.cpp` | 扫描 .data 段静态指针按 getName 查找对象 | `build_datascan.bat` |
 
 ## 常见问题
 
