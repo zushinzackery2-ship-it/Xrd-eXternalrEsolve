@@ -322,9 +322,9 @@ Xrd-eXternalrEsolve/
 |:-----|:-----|:---------|
 | `test_dump.cpp` | AutoInit + DumpSdk 全流程 | `build_dump.bat` |
 
-## 修改指南
+## 修结构
 
-- **偏移定义**：所有偏移字段集中在 `core/context.hpp` 的 `UEOffsets` 结构体
+- **结构定义**：所有偏移字段集中在 `core/context.hpp` 的 `UEOffsets` 结构体
 - **偏移扫描**：每个 `resolve/scan_*.hpp` 负责一类偏移的自动发现逻辑，`auto_init.hpp` 按阶段串联调用
 
 ## 常见问题
