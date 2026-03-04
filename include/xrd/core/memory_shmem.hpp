@@ -1,0 +1,433 @@
+#pragma once
+// Xrd-eXternalrEsolve - 共享内存驱动访问器
+// 通过 MDL 映射的共享内存 + adaptive spinning 实现零 IOCTL 读取
+// 仅初始化和销毁时使用 IOCTL，运行时所有 Read 走共享内存
+
+#include "memory.hpp"
+#include "memory_driver.hpp"  // ReiVMProtocol 定义复用
+#include <intrin.h>
+#include <mutex>
+
+namespace xrd
+{
+
+// 共享内存命令
+namespace ShmemCmd
+{
+    inline constexpr LONG None  = 0;
+    inline constexpr LONG Read  = 1;
+    inline constexpr LONG Write = 2;
+}
+
+// 共享内存参数（与驱动 shared_mem.h 一致）
+namespace ShmemConst
+{
+    inline constexpr u32 PageCount     = 16;              // 16 页 = 64KB
+    inline constexpr u32 TotalSize     = PageCount * 4096;
+    inline constexpr u32 DataOffset    = 0x100;           // 256 字节控制头
+    inline constexpr u32 MaxData       = TotalSize - DataOffset;
+    inline constexpr u32 SpinThreshold = 4000;            // 自旋迭代次数
+    inline constexpr DWORD EventTimeoutMs = 50;           // Event 等待超时
+}
+
+// 读取方法（与驱动一致）
+namespace ReadMethod
+{
+    inline constexpr u32 CR3   = 0x00;
+    inline constexpr u32 MmCpy = 0x01;
+}
+
+// 共享内存控制头（与驱动 SHARED_MEM_HEADER 布局完全一致）
+struct SharedMemHeader
+{
+    volatile LONG requestReady;     // +0x00
+    volatile LONG responseReady;    // +0x04
+    volatile LONG shutdown;         // +0x08
+    LONG command;                   // +0x0C
+    u32 pid;                        // +0x10
+    u32 size;                       // +0x14
+    u64 address;                    // +0x18
+    u32 method;                     // +0x20
+    LONG status;                    // +0x24 (NTSTATUS)
+    u32 bytesRead;                  // +0x28
+    u32 reserved[5];                // +0x2C 填充到 0x40
+};
+
+// IOCTL 初始化请求/响应（与驱动一致）
+struct ShmemInitRequest
+{
+    u32 slotId;       // 0xFFFFFFFF = 自动分配
+};
+
+struct ShmemInitResponse
+{
+    u64 userVa;
+    u64 requestEventHandle;
+    u64 responseEventHandle;
+    u32 totalSize;
+    u32 dataOffset;
+    u32 slotId;       // 分配到的 slot ID
+    u32 reserved;
+};
+
+// IOCTL 编号
+namespace ShmemIoctl
+{
+    inline constexpr DWORD Init =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x830, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    inline constexpr DWORD Destroy =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x831, METHOD_BUFFERED, FILE_ANY_ACCESS);
+}
+
+// 基于共享内存的内存访问器
+class SharedMemoryAccessor : public IMemoryAccessor
+{
+public:
+    SharedMemoryAccessor() = default;
+
+    // 打开驱动并初始化共享内存通道（自动分配 slot）
+    bool Open(u32 pid)
+    {
+        return Open(pid, 0xFFFFFFFF);
+    }
+
+    // 打开驱动并初始化共享内存通道（指定 slot，0xFFFFFFFF = 自动分配）
+    bool Open(u32 pid, u32 requestedSlot)
+    {
+        m_pid = pid;
+        m_requestedSlot = requestedSlot;
+
+        // 打开驱动设备
+        m_hDriver = CreateFileW(
+            ReiVMProtocol::kDeviceSymbolicName,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+
+        if (m_hDriver == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        // 初始化共享内存
+        if (!InitSharedMem())
+        {
+            CloseHandle(m_hDriver);
+            m_hDriver = INVALID_HANDLE_VALUE;
+            return false;
+        }
+
+        return true;
+    }
+
+    // 通过驱动获取主模块基址（仍需 IOCTL，只调用一次）
+    u64 GetMainModule() const
+    {
+        if (m_hDriver == INVALID_HANDLE_VALUE || m_pid == 0)
+        {
+            return 0;
+        }
+
+        ReiVMProtocol::DriverHeader input{};
+        input.pid = m_pid;
+
+        u64 moduleBase = 0;
+        DWORD bytesReturned = 0;
+        BOOL ok = DeviceIoControl(
+            m_hDriver,
+            ReiVMProtocol::IOCTL_GET_MAINMODULE,
+            &input, sizeof(input),
+            &moduleBase, sizeof(moduleBase),
+            &bytesReturned, nullptr);
+
+        if (!ok)
+        {
+            return 0;
+        }
+        return moduleBase;
+    }
+
+    // 通过共享内存读取——零 IOCTL 开销
+    bool Read(uptr address, void* buffer, std::size_t size) const override
+    {
+        if (!m_header || !address || !buffer || size == 0)
+        {
+            return false;
+        }
+
+        // 超过共享内存数据区大小时分块读取
+        if (size > ShmemConst::MaxData)
+        {
+            return ReadChunked(address, buffer, size);
+        }
+
+        return ReadSingle(address, buffer, static_cast<u32>(size));
+    }
+
+    bool Write(uptr address, const void* buffer, std::size_t size) const override
+    {
+        // 共享内存通道当前不支持写入
+        (void)address;
+        (void)buffer;
+        (void)size;
+        return false;
+    }
+
+    // 批量读：逐个走共享内存（每次零 IOCTL 开销）
+    bool ReadBatch(ReadBatchDesc* descs, u32 count) const override
+    {
+        if (!m_header || !descs || count == 0)
+        {
+            return false;
+        }
+
+        bool allOk = true;
+        for (u32 i = 0; i < count; ++i)
+        {
+            auto& d = descs[i];
+            if (d.address && d.buffer && d.size > 0)
+            {
+                if (!Read(d.address, d.buffer, d.size))
+                {
+                    allOk = false;
+                }
+            }
+        }
+        return allOk;
+    }
+
+    HANDLE GetDriverHandle() const { return m_hDriver; }
+    u32 GetPid() const { return m_pid; }
+    bool IsSharedMemReady() const { return m_header != nullptr; }
+
+    ~SharedMemoryAccessor()
+    {
+        DestroySharedMem();
+
+        if (m_hDriver != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(m_hDriver);
+            m_hDriver = INVALID_HANDLE_VALUE;
+        }
+    }
+
+    // 禁止拷贝
+    SharedMemoryAccessor(const SharedMemoryAccessor&) = delete;
+    SharedMemoryAccessor& operator=(const SharedMemoryAccessor&) = delete;
+
+    // 允许移动
+    SharedMemoryAccessor(SharedMemoryAccessor&& other) noexcept
+        : m_hDriver(other.m_hDriver)
+        , m_pid(other.m_pid)
+        , m_header(other.m_header)
+        , m_dataPtr(other.m_dataPtr)
+        , m_requestEvent(other.m_requestEvent)
+        , m_responseEvent(other.m_responseEvent)
+    {
+        other.m_hDriver = INVALID_HANDLE_VALUE;
+        other.m_pid = 0;
+        other.m_header = nullptr;
+        other.m_dataPtr = nullptr;
+        other.m_requestEvent = nullptr;
+        other.m_responseEvent = nullptr;
+    }
+
+    SharedMemoryAccessor& operator=(SharedMemoryAccessor&& other) noexcept
+    {
+        if (this != &other)
+        {
+            DestroySharedMem();
+            if (m_hDriver != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(m_hDriver);
+            }
+
+            m_hDriver = other.m_hDriver;
+            m_pid = other.m_pid;
+            m_header = other.m_header;
+            m_dataPtr = other.m_dataPtr;
+            m_requestEvent = other.m_requestEvent;
+            m_responseEvent = other.m_responseEvent;
+
+            other.m_hDriver = INVALID_HANDLE_VALUE;
+            other.m_pid = 0;
+            other.m_header = nullptr;
+            other.m_dataPtr = nullptr;
+            other.m_requestEvent = nullptr;
+            other.m_responseEvent = nullptr;
+        }
+        return *this;
+    }
+
+private:
+    // 单次共享内存读取（size <= MaxData）
+    // 共享内存通道是单通道，多线程并发必须序列化
+    bool ReadSingle(uptr address, void* buffer, u32 size) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        // 填写请求
+        m_header->command = ShmemCmd::Read;
+        m_header->pid     = m_pid;
+        m_header->address = static_cast<u64>(address);
+        m_header->size    = size;
+        m_header->method  = ReadMethod::CR3;
+        m_header->status  = 0;
+        m_header->bytesRead = 0;
+
+        _mm_sfence();  // 确保写入对驱动可见
+
+        // 发起请求
+        InterlockedExchange(&m_header->responseReady, 0);
+        InterlockedExchange(&m_header->requestReady, 1);
+
+        if (m_requestEvent)
+        {
+            SetEvent(m_requestEvent);
+        }
+
+        // 等待响应：adaptive spinning
+        BOOL gotResponse = FALSE;
+
+        // 阶段 1: 自旋
+        for (u32 i = 0; i < ShmemConst::SpinThreshold; ++i)
+        {
+            if (InterlockedCompareExchange(&m_header->responseReady, 0, 1) == 1)
+            {
+                gotResponse = TRUE;
+                break;
+            }
+            _mm_pause();
+        }
+
+        // 阶段 2: Event 等待
+        if (!gotResponse && m_responseEvent)
+        {
+            WaitForSingleObject(m_responseEvent, ShmemConst::EventTimeoutMs);
+            if (InterlockedCompareExchange(&m_header->responseReady, 0, 1) == 1)
+            {
+                gotResponse = TRUE;
+            }
+        }
+
+        if (!gotResponse)
+        {
+            return false;
+        }
+
+        _mm_lfence();  // 确保读取有序
+
+        // 拷贝结果
+        if (m_header->status >= 0 && m_header->bytesRead > 0)
+        {
+            u32 toCopy = (m_header->bytesRead < size) ? m_header->bytesRead : size;
+            std::memcpy(buffer, m_dataPtr, toCopy);
+            return m_header->bytesRead == size;
+        }
+
+        return false;
+    }
+
+    // 分块读取（超过 MaxData 时自动分块）
+    bool ReadChunked(uptr address, void* buffer, std::size_t totalSize) const
+    {
+        u8* dst = static_cast<u8*>(buffer);
+        std::size_t remaining = totalSize;
+        uptr currentAddr = address;
+
+        while (remaining > 0)
+        {
+            u32 chunk = (remaining > ShmemConst::MaxData)
+                ? ShmemConst::MaxData
+                : static_cast<u32>(remaining);
+
+            if (!ReadSingle(currentAddr, dst, chunk))
+            {
+                return false;
+            }
+
+            dst += chunk;
+            currentAddr += chunk;
+            remaining -= chunk;
+        }
+
+        return true;
+    }
+
+    // 初始化共享内存通道
+    bool InitSharedMem()
+    {
+        ShmemInitRequest req{};
+        req.slotId = m_requestedSlot;
+        ShmemInitResponse resp{};
+        DWORD bytesReturned = 0;
+
+        BOOL ok = DeviceIoControl(
+            m_hDriver,
+            ShmemIoctl::Init,
+            &req, sizeof(req),
+            &resp, sizeof(resp),
+            &bytesReturned, nullptr);
+
+        if (!ok || resp.userVa == 0)
+        {
+            return false;
+        }
+
+        m_header = reinterpret_cast<SharedMemHeader*>(resp.userVa);
+        m_dataPtr = reinterpret_cast<u8*>(resp.userVa) + resp.dataOffset;
+        m_requestEvent = reinterpret_cast<HANDLE>(resp.requestEventHandle);
+        m_responseEvent = reinterpret_cast<HANDLE>(resp.responseEventHandle);
+        m_slotId = resp.slotId;
+
+        return true;
+    }
+
+    // 销毁共享内存通道
+    void DestroySharedMem()
+    {
+        if (!m_header)
+        {
+            return;
+        }
+
+        // 通知驱动工作线程退出
+        InterlockedExchange(&m_header->shutdown, 1);
+        if (m_requestEvent)
+        {
+            SetEvent(m_requestEvent);
+        }
+
+        // 发送销毁 IOCTL（传 slotId 只销毁自己的通道）
+        if (m_hDriver != INVALID_HANDLE_VALUE)
+        {
+            DWORD bytesReturned = 0;
+            DeviceIoControl(
+                m_hDriver,
+                ShmemIoctl::Destroy,
+                &m_slotId, sizeof(m_slotId),
+                nullptr, 0,
+                &bytesReturned, nullptr);
+        }
+
+        m_header = nullptr;
+        m_dataPtr = nullptr;
+        m_requestEvent = nullptr;
+        m_responseEvent = nullptr;
+    }
+
+    HANDLE m_hDriver = INVALID_HANDLE_VALUE;
+    u32 m_pid = 0;
+    u32 m_requestedSlot = 0xFFFFFFFF;      // 请求的 slot（0xFFFFFFFF = 自动分配）
+    u32 m_slotId = 0;                      // 实际分配到的 slot ID
+    SharedMemHeader* m_header = nullptr;   // 驱动映射到用户空间的共享内存
+    u8* m_dataPtr = nullptr;               // 数据区指针 (header + dataOffset)
+    HANDLE m_requestEvent = nullptr;       // 请求事件（SetEvent 通知驱动）
+    HANDLE m_responseEvent = nullptr;      // 响应事件（WaitForSingleObject 等完成）
+    mutable std::mutex m_mutex;            // 序列化多线程共享内存访问
+};
+
+} // namespace xrd
