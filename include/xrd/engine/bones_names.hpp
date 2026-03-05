@@ -331,6 +331,20 @@ inline void PrecacheBoneNames(uptr meshComponent)
     (void)GetCachedBoneNames(meshComponent);
 }
 
+// 关卡切换时清除所有骨骼相关缓存，防止地址复用导致数据错乱
+inline void ClearBoneCaches()
+{
+    {
+        std::lock_guard<std::mutex> lock(detail::SkelMeshCacheMutex());
+        detail::SkelMeshCache().clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(detail::BoneNameCacheMutex());
+        detail::BoneNameCache().clear();
+    }
+    std::cerr << "[xrd] 骨骼缓存已清除（关卡切换）\n";
+}
+
 // ─── 过滤式骨骼读取：只读指定索引的骨骼世界坐标和屏幕投影 ───
 
 inline bool GetFilteredBoneWorldLocations(
