@@ -1,7 +1,7 @@
 # 只保留 include/ README.md LICENSE，其余全部忽略
 *
 
-# 不忽略目录结构
+# 不忽略目录结构（git 需要目录才能追踪子文件）
 !*/
 
 # 保留的文件
@@ -9,11 +9,3 @@
 !README.md
 !LICENSE
 !.gitignore
-
-# 明确忽略的目录
-PhysX-3.4-3.4.2-bsd/
-CppSDK/
-Imgui/
-build/
-external_dumper7/
-.vs/

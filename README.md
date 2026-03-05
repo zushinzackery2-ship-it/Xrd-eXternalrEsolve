@@ -48,7 +48,7 @@
 | **W2S** | 内置 WorldToScreen 投影 |
 | **反射式字段访问** | `ReadActorFieldPtr/Int32/Float` 通过属性名自动查找偏移（带缓存），无需硬编码 |
 | **共享内存通道** | `SharedMemoryAccessor` 通过内核驱动共享内存实现零 IOCTL 读取，支持多 slot 并行（最多 4 通道） |
-| **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule 碰撞体 |
+| **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule/ConvexMesh 碰撞体 |
 
 ---
 
@@ -84,8 +84,9 @@
 |  | `GetFilteredBoneWorldLocations(mesh, indices, ...)` | 按索引列表过滤式读取骨骼 |
 |  | `GetCachedBoneNames(mesh)` | 获取骨骼名称列表（带缓存） |
 | **PhysX** | `PhysXReader(mem, globalPtr)` | 构造 PhysX 读取器 |
-|  | `ReadAllActors(outActors)` | 读取所有 PhysX Actor（static + dynamic） |
-|  | `ReadShapes(actor, outShapes)` | 读取 Actor 的碰撞 Shape 列表 |
+|  | `ReadStaticCollision(outData)` | 读取所有 static actor 碰撞数据（仅 eSIMULATION_SHAPE） |
+|  | `ReadActorData(addr, outData)` | 读取单个 Actor 的 pose + shapes |
+|  | `ReadConvexMeshData(addr, outData)` | 读取 ConvexMesh 顶点与边数据 |
 | **SDK 导出** | `DumpSdk(path)` | 完整导出 (CppSDK + Dump + Mapping) |
 |  | `DumpCppSdk(path)` | 仅 C++ SDK |
 |  | `DumpSpaceSdk(path)` | Dump 格式 |
@@ -318,7 +319,7 @@ Xrd-eXternalrEsolve/
 │           ├── dump_function_flags.hpp      #   函数标志位
 │           ├── dump_property_flags.hpp      #   属性标志位
 │           ├── w2s.hpp                      #   WorldToScreen
-│           └── gen/                         #   预生成基础类型头文件 (12 个)
+│           └── gen/                         #   预生成基础类型头文件 (11 个)
 ├── LICENSE                                  # MIT
 └── README.md
 ```
