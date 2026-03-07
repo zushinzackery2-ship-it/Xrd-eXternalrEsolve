@@ -5,6 +5,7 @@
 #include "tessellation.hpp"
 #include <embree3/rtcore.h>
 #include <atomic>
+#include <shared_mutex>
 #include <cmath>
 #include <iostream>
 
@@ -37,10 +38,13 @@ public:
 
     static void Shutdown()
     {
-        RTCScene old = s_scene.exchange(nullptr);
-        if (old)
         {
-            rtcReleaseScene(old);
+            std::unique_lock<std::shared_mutex> lock(s_sceneMutex);
+            if (s_scene)
+            {
+                rtcReleaseScene(s_scene);
+                s_scene = nullptr;
+            }
         }
         if (s_device)
         {
@@ -87,11 +91,15 @@ public:
         rtcReleaseGeometry(geom);
         rtcCommitScene(newScene);
 
-        // 无锁原子替换
-        RTCScene old = s_scene.exchange(newScene);
-        if (old)
+        // 独占锁替换场景，等待所有射线查询完成后才释放旧场景
         {
-            rtcReleaseScene(old);
+            std::unique_lock<std::shared_mutex> lock(s_sceneMutex);
+            RTCScene old = s_scene;
+            s_scene = newScene;
+            if (old)
+            {
+                rtcReleaseScene(old);
+            }
         }
 
         std::cerr << "[Embree] Scene built: " << numVerts << " verts, "
@@ -108,8 +116,9 @@ public:
             return false;
         }
 
-        RTCScene scene = s_scene.load();
-        if (!scene)
+        // 共享锁保护场景指针，防止 RebuildScene 释放正在使用的场景
+        std::shared_lock<std::shared_mutex> lock(s_sceneMutex);
+        if (!s_scene)
         {
             return false;
         }
@@ -143,7 +152,7 @@ public:
         RTCIntersectContext ctx;
         rtcInitIntersectContext(&ctx);
 
-        rtcOccluded1(scene, &ctx, &ray);
+        rtcOccluded1(s_scene, &ctx, &ray);
 
         return (ray.tfar < 0.0f);
     }
@@ -180,7 +189,8 @@ public:
 private:
     // C++17 inline static 保证跨 TU 唯一
     static inline RTCDevice s_device = nullptr;
-    static inline std::atomic<RTCScene> s_scene{nullptr};
+    static inline RTCScene s_scene = nullptr;
+    static inline std::shared_mutex s_sceneMutex;
     static inline bool s_ready = false;
 };
 

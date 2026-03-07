@@ -66,10 +66,29 @@ inline bool AutoInit(const wchar_t* processName = nullptr)
     std::cerr << " 基址: 0x" << std::hex << ctx.mainModule.base
               << " 大小: 0x" << ctx.mainModule.size << std::dec << "\n";
 
-    // Phase 2+: 公共扫描与偏移发现
-    if (!detail::DoCommonScanAndDiscover())
+    // Phase 2+: 公共扫描与偏移发现（重试直到关键值全部有效）
+    for (int attempt = 1; ; ++attempt)
     {
-        return false;
+        if (attempt > 1)
+        {
+            detail::ResetOffsetsForRetry();
+            std::cerr << "[xrd] === Init 第 " << attempt << " 轮 ===\n";
+        }
+
+        if (!detail::DoCommonScanAndDiscover())
+        {
+            std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
+            Sleep(300);
+            continue;
+        }
+
+        if (detail::ValidateCriticalValues())
+        {
+            break;
+        }
+
+        std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
+        Sleep(300);
     }
 
     detail::PrintInitSummary();
@@ -124,9 +143,28 @@ inline bool AutoInitDriver(const wchar_t* processName = nullptr)
     std::cerr << "[xrd] 模块基址: 0x" << std::hex << ctx.mainModule.base
               << " 大小: 0x" << ctx.mainModule.size << std::dec << "\n";
 
-    if (!detail::DoCommonScanAndDiscover())
+    for (int attempt = 1; ; ++attempt)
     {
-        return false;
+        if (attempt > 1)
+        {
+            detail::ResetOffsetsForRetry();
+            std::cerr << "[xrd] === Init 第 " << attempt << " 轮 ===\n";
+        }
+
+        if (!detail::DoCommonScanAndDiscover())
+        {
+            std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
+            Sleep(300);
+            continue;
+        }
+
+        if (detail::ValidateCriticalValues())
+        {
+            break;
+        }
+
+        std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
+        Sleep(300);
     }
 
     detail::PrintInitSummary();
@@ -180,9 +218,28 @@ inline bool AutoInitSharedMem(const wchar_t* processName = nullptr)
     std::cerr << "[xrd] 模块基址: 0x" << std::hex << ctx.mainModule.base
               << " 大小: 0x" << ctx.mainModule.size << std::dec << "\n";
 
-    if (!detail::DoCommonScanAndDiscover())
+    for (int attempt = 1; ; ++attempt)
     {
-        return false;
+        if (attempt > 1)
+        {
+            detail::ResetOffsetsForRetry();
+            std::cerr << "[xrd] === Init 第 " << attempt << " 轮 ===\n";
+        }
+
+        if (!detail::DoCommonScanAndDiscover())
+        {
+            std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
+            Sleep(300);
+            continue;
+        }
+
+        if (detail::ValidateCriticalValues())
+        {
+            break;
+        }
+
+        std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
+        Sleep(300);
     }
 
     detail::PrintInitSummary();

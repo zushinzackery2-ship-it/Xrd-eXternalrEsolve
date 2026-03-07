@@ -328,5 +328,49 @@ inline bool DoCommonScanAndDiscover()
     return true;
 }
 
+// 验证关键值：全部有效返回 true，任一缺失则打印并返回 false
+inline bool ValidateCriticalValues()
+{
+    auto& ctx = Ctx();
+    bool allValid = true;
+
+    auto check = [&](bool ok, const char* name) {
+        if (!ok)
+        {
+            std::cerr << "[xrd] 缺少关键值: " << name << "\n";
+            allValid = false;
+        }
+    };
+
+    // 全局指针
+    check(ctx.off.GNames != 0,                    "GNames");
+    check(ctx.off.GObjects != 0,                   "GObjects");
+    check(ctx.off.GWorld != 0,                     "GWorld");
+    check(ctx.off.DebugCanvasObjCacheAddr != 0,    "DebugCanvasObject");
+    check(ctx.off.ProcessEvent_Addr != 0,          "ProcessEvent");
+    check(ctx.off.ProcessEvent_VTableIndex >= 0,   "ProcessEventIdx");
+    check(ctx.off.AppendNameToString != 0,         "AppendString");
+
+    // World 链反射偏移
+    check(ctx.off.UWorld_PersistentLevel >= 0,             "UWorld_PersistentLevel");
+    check(ctx.off.UWorld_OwningGameInstance >= 0,           "UWorld_OwningGameInstance");
+    check(ctx.off.UGameInstance_LocalPlayers >= 0,          "UGameInstance_LocalPlayers");
+    check(ctx.off.ULocalPlayer_PlayerController >= 0,      "ULocalPlayer_PlayerController");
+    check(ctx.off.ULevel_Actors >= 0,                      "ULevel_Actors");
+    check(ctx.off.APlayerController_Pawn >= 0,             "APlayerController_Pawn");
+
+    return allValid;
+}
+
+// 重试前重置偏移和段缓存（保留 PID / mem / mainModule）
+inline void ResetOffsetsForRetry()
+{
+    auto& ctx = Ctx();
+    ctx.off = UEOffsets{};
+    ctx.chaosOff = ChaosOffsets{};
+    ctx.sections.clear();
+    ctx.inited = false;
+}
+
 } // namespace detail
 } // namespace xrd
