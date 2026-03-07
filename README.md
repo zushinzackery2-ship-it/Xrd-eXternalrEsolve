@@ -49,6 +49,9 @@
 | **反射式字段访问** | `ReadActorFieldPtr/Int32/Float` 通过属性名自动查找偏移（带缓存），无需硬编码 |
 | **共享内存通道** | `SharedMemoryAccessor` 通过内核驱动共享内存实现零 IOCTL 读取，支持多 slot 并行（最多 4 通道） |
 | **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule/ConvexMesh 碰撞体 |
+| **Chaos 碰撞读取** | 远程读取 UE5 Chaos 物理场景（FPhysScene_Chaos），通过反射自动发现 BodyInstance/PhysicsProxy/AggGeom 偏移 |
+| **Embree 遮挡检测** | 基于 Embree 的 raycast 遮挡查询，支持碰撞体曲面细分与 BVH 加速 |
+| **碰撞线框渲染** | Box/Sphere/Capsule/ConvexMesh 线框数据生成，支持世界坐标变换与屏幕投影 |
 
 ---
 
@@ -87,6 +90,10 @@
 |  | `ReadStaticCollision(outData)` | 读取所有 static actor 碰撞数据（仅 eSIMULATION_SHAPE） |
 |  | `ReadActorData(addr, outData)` | 读取单个 Actor 的 pose + shapes |
 |  | `ReadConvexMeshData(addr, outData)` | 读取 ConvexMesh 顶点与边数据 |
+| **Chaos** | `InitChaosOffsets(ctx)` | 反射发现 Chaos 碰撞偏移 |
+|  | `ChaosReader::ReadAllActors()` | 读取所有 Chaos 碰撞 Actor |
+| **Embree** | `RaycastScene::Build(shapes)` | 从碰撞体构建 BVH |
+|  | `RaycastScene::IsOccluded(o, t)` | 射线遮挡查询 |
 | **SDK 导出** | `DumpSdk(path)` | 完整导出 (CppSDK + Dump + Mapping) |
 |  | `DumpCppSdk(path)` | 仅 C++ SDK |
 |  | `DumpSpaceSdk(path)` | Dump 格式 |
@@ -263,64 +270,90 @@ AutoInit()
 ```
 Xrd-eXternalrEsolve/
 ├── include/
-│   ├── xrd.hpp                              # 主入口
+│   ├── xrd.hpp                                  # 主入口（单一 include）
 │   └── xrd/
-│       ├── core/                            # 基础设施
-│       │   ├── types.hpp                    #   基本类型 (uptr/i32/u32/FName...)
-│       │   ├── memory.hpp                   #   IMemoryAccessor 抽象 + WinAPI 实现
-│       │   ├── memory_driver.hpp            #   DriverMemoryAccessor (驱动 IOCTL)
-│       │   ├── memory_shmem.hpp             #   SharedMemoryAccessor (共享内存零IOCTL, 多slot)
-│       │   ├── process.hpp                  #   进程附加
-│       │   ├── process_sections.hpp         #   PE 段缓存
-│       │   ├── context.hpp                  #   全局上下文 & UEOffsets
-│       │   └── auto_init.hpp               #   六阶段自动初始化
-│       ├── engine/                          # UE 对象封装
-│       │   ├── names.hpp                    #   FName 解析 (NamePool / ChunkedArray)
-│       │   ├── objects.hpp                  #   UObject / UStruct / FProperty 读取
-│       │   ├── objects_search.hpp           #   对象搜索 & 属性偏移缓存
-│       │   ├── world.hpp                    #   UWorld / ULevel / Actor 数组
-│       │   ├── world_actors.hpp             #   PlayerController / Pawn / Actor 过滤
-│       │   ├── bones.hpp                    #   骨骼世界坐标 (双缓冲)
-│       │   ├── bones_names.hpp              #   骨骼名称读取与缓存
-│       │   ├── bones_batch.hpp              #   骨骼批量读取 & 过滤
-│       │   └── physx/                       #   PhysX 碰撞数据读取
-│       │       ├── physx_types.hpp          #     PhysX 结构定义 & 偏移
-│       │       ├── physx_reader.hpp         #     PhysXReader 远程读取器
-│       │       └── physx_pe.hpp             #     PhysX DLL PE 解析 (RVA 定位)
-│       ├── resolve/                         # 偏移扫描器 (18 个)
-│       │   ├── scan_gobjects.hpp            #   GObjects 定位
-│       │   ├── scan_gnames.hpp              #   GNames 定位
-│       │   ├── scan_offsets.hpp             #   UObject 基础偏移
-│       │   ├── scan_struct_offsets.hpp       #   UStruct 偏移
-│       │   ├── scan_property_*.hpp          #   Property 系列偏移 (6 个文件)
-│       │   ├── scan_ufunction_offsets.hpp   #   UFunction 偏移
-│       │   ├── scan_uclass_offsets.hpp      #   UClass 偏移
-│       │   ├── scan_process_event.hpp       #   ProcessEvent VTable 扫描
-│       │   ├── scan_append_string.hpp       #   AppendString 扫描
-│       │   ├── scan_debug_canvas.hpp        #   GCanvas 扫描
-│       │   ├── scan_world.hpp               #   GWorld 定位
-│       │   ├── scan_bones.hpp               #   骨骼偏移扫描
-│       │   └── fvector_detect.hpp           #   Float/Double 精度检测
-│       └── helpers/                         # SDK 导出
-│           ├── dump_sdk.hpp                 #   SDK 导出主逻辑
-│           ├── dump_sdk_struct.hpp          #   Class/Struct 代码生成
-│           ├── dump_sdk_writer.hpp          #   文件写出
-│           ├── dump_sdk_func_gen.hpp        #   函数签名生成
-│           ├── dump_sdk_format.hpp          #   属性名格式化
-│           ├── dump_sdk_infra.hpp           #   导出基础设施
-│           ├── dump_type_resolve.hpp        #   类型名解析
-│           ├── dump_collect.hpp             #   属性收集
-│           ├── dump_deps.hpp                #   依赖分析
-│           ├── dump_dep_sort.hpp            #   拓扑排序
-│           ├── dump_prefix.hpp              #   StructEntry 定义
-│           ├── dump_predefined.hpp          #   预定义类型
-│           ├── dump_enum.hpp                #   枚举导出
-│           ├── dump_extra.hpp               #   Dump/Mapping 格式
-│           ├── dump_function_flags.hpp      #   函数标志位
-│           ├── dump_property_flags.hpp      #   属性标志位
-│           ├── w2s.hpp                      #   WorldToScreen
-│           └── gen/                         #   预生成基础类型头文件 (11 个)
-├── LICENSE                                  # MIT
+│       ├── core/                                # 基础设施
+│       │   ├── types.hpp                        #   基本类型 (uptr/i32/u32/FName...)
+│       │   ├── context.hpp                      #   全局上下文 & UEOffsets
+│       │   ├── process.hpp                      #   进程附加
+│       │   └── process_sections.hpp             #   PE 段缓存
+│       ├── memory/                              # 内存访问器
+│       │   ├── memory.hpp                       #   IMemoryAccessor 抽象 + WinAPI 实现
+│       │   ├── memory_driver.hpp                #   DriverMemoryAccessor (驱动 IOCTL)
+│       │   └── memory_shmem.hpp                 #   SharedMemoryAccessor (共享内存, 多slot)
+│       ├── init/                                # 初始化流程
+│       │   ├── auto_init.hpp                    #   六阶段自动初始化入口
+│       │   ├── init_common.hpp                  #   公共扫描逻辑 + FVector 精度检测
+│       │   ├── init_chaos.hpp                   #   Chaos 偏移反射发现
+│       │   ├── init_world_chain.hpp             #   World 链偏移反射发现
+│       │   └── init_helpers.hpp                 #   初始化辅助工具
+│       ├── engine/                              # UE 对象封装
+│       │   ├── names.hpp                        #   FName 解析 (NamePool / ChunkedArray)
+│       │   ├── objects/                         #   UObject 系统
+│       │   │   ├── objects.hpp                  #     UObject / UStruct / FProperty 读取
+│       │   │   └── objects_search.hpp           #     对象搜索 & 属性偏移缓存
+│       │   ├── world/                           #   游戏世界
+│       │   │   ├── world.hpp                    #     UWorld / ULevel / Actor 数组
+│       │   │   └── world_actors.hpp             #     PlayerController / Pawn / Actor 过滤
+│       │   └── bones/                           #   骨骼系统
+│       │       ├── bones.hpp                    #     骨骼世界坐标 (双缓冲)
+│       │       ├── bones_batch.hpp              #     骨骼批量读取 & 过滤
+│       │       └── bones_names.hpp              #     骨骼名称读取与缓存
+│       ├── physx/                               # PhysX 碰撞读取
+│       │   ├── physx_types.hpp                  #   PhysX 结构定义 & 偏移
+│       │   ├── physx_reader.hpp                 #   PhysXReader 远程读取器
+│       │   └── physx_pe.hpp                     #   PhysX DLL PE 解析 (RVA 定位)
+│       ├── chaos/                               # Chaos 碰撞读取
+│       │   ├── chaos_types.hpp                  #   Chaos 结构定义
+│       │   └── chaos_reader.hpp                 #   ChaosReader 远程读取器
+│       ├── collision/                           # 碰撞线框
+│       │   └── collision_types.hpp              #   碰撞体类型与线框数据结构
+│       ├── embree/                              # Embree 遮挡检测
+│       │   ├── raycast_scene.hpp                #   BVH 构建 & 射线查询
+│       │   └── tessellation.hpp                 #   碰撞体曲面细分
+│       ├── resolve/                             # 偏移扫描器
+│       │   ├── globals/                         #   全局指针扫描
+│       │   │   ├── scan_gobjects.hpp            #     GObjects 定位
+│       │   │   ├── scan_gnames.hpp              #     GNames 定位
+│       │   │   ├── scan_world.hpp               #     GWorld 定位
+│       │   │   └── scan_debug_canvas.hpp        #     GCanvas 扫描
+│       │   ├── uobject/                         #   UObject 偏移扫描
+│       │   │   ├── scan_offsets.hpp             #     UObject 基础偏移
+│       │   │   ├── scan_struct_offsets.hpp       #     UStruct 偏移
+│       │   │   ├── scan_ufunction_offsets.hpp   #     UFunction 偏移
+│       │   │   └── scan_uclass_offsets.hpp      #     UClass 偏移
+│       │   ├── property/                        #   Property 偏移扫描 (6 个文件)
+│       │   │   ├── scan_property_offsets.hpp
+│       │   │   ├── scan_property_base_offsets.hpp
+│       │   │   ├── scan_property_base_offsets2.hpp
+│       │   │   ├── scan_property_offsets_extra.hpp
+│       │   │   ├── scan_property_offsets_struct.hpp
+│       │   │   └── scan_property_offsets_typed.hpp
+│       │   └── runtime/                         #   运行时扫描
+│       │       ├── scan_process_event.hpp        #     ProcessEvent VTable 扫描
+│       │       ├── scan_append_string.hpp        #     AppendString 扫描
+│       │       └── scan_bones.hpp               #     骨骼偏移扫描
+│       └── helpers/                             # SDK 导出 & 工具
+│           ├── w2s.hpp                          #   WorldToScreen / GetVPMatrix
+│           └── dump/                            #   SDK 导出
+│               ├── dump_sdk.hpp                 #     SDK 导出主逻辑
+│               ├── dump_sdk_struct.hpp          #     Class/Struct 代码生成
+│               ├── dump_sdk_writer.hpp          #     文件写出
+│               ├── dump_sdk_func_gen.hpp        #     函数签名生成
+│               ├── dump_sdk_format.hpp          #     属性名格式化
+│               ├── dump_sdk_infra.hpp           #     导出基础设施
+│               ├── dump_type_resolve.hpp        #     类型名解析
+│               ├── dump_collect.hpp             #     属性收集
+│               ├── dump_deps.hpp                #     依赖分析
+│               ├── dump_dep_sort.hpp            #     拓扑排序
+│               ├── dump_prefix.hpp              #     StructEntry 定义
+│               ├── dump_predefined.hpp          #     预定义类型
+│               ├── dump_enum.hpp                #     枚举导出
+│               ├── dump_extra.hpp               #     Dump/Mapping 格式
+│               ├── dump_function_flags.hpp      #     函数标志位
+│               ├── dump_property_flags.hpp      #     属性标志位
+│               └── gen/                         #     预生成基础类型头文件 (11 个)
+├── LICENSE                                      # MIT
 └── README.md
 ```
 
@@ -331,7 +364,9 @@ Xrd-eXternalrEsolve/
 ## 修结构
 
 - **结构定义**：所有偏移字段集中在 `core/context.hpp` 的 `UEOffsets` 结构体
-- **偏移扫描**：每个 `resolve/scan_*.hpp` 负责一类偏移的自动发现逻辑，`auto_init.hpp` 按阶段串联调用
+- **偏移扫描**：`resolve/` 下按职责分组（globals / uobject / property / runtime），`init/auto_init.hpp` 按阶段串联调用
+- **FVector 精度检测**：通过反射读取 `RelativeLocation.ElementSize`（24=double, 12=float），逻辑在 `init/init_common.hpp`
+- **物理后端**：运行时自动检测 PhysX / Chaos，分别由 `physx/` 和 `chaos/` 模块处理
 
 ## 常见问题
 
@@ -340,7 +375,7 @@ Xrd-eXternalrEsolve/
 | GObjects 未找到 | 游戏数据段加密或非标准布局 | 手动 `SetGObjects(rva)` |
 | GNames 未找到 | NamePool 分块大小不同 | 检查 ChunkSize (0x2000 / 0x4000) |
 | GetAPawn 返回 0 | GWorld 未找到或玩家未 Spawn | 确认游戏已进入关卡 |
-| 骨骼位置异常 | Double/Float 检测不准 | 确认 `bUseDoublePrecision` |
+| 骨骼位置异常 | Double/Float 检测不准 | 检查 RelativeLocation.ElementSize 反射结果 |
 | SDK padding 不对齐 | MinAlignment 读取偏差 | 对比 Dumper-7 输出排查 |
 | 多线程崩溃 | 旧版本缓存无锁 | 更新到最新版（已加 shared_mutex） |
 
