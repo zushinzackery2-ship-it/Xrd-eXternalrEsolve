@@ -194,8 +194,26 @@ inline bool IsInited()
     return Ctx().inited;
 }
 
+// 线程局部内存访问器覆盖：设置后该线程的 Mem() 返回此指针而非全局通道
+// 用于多通道共享内存场景，每个工作线程绑定独立 slot 消除 mutex 争抢
+inline thread_local IMemoryAccessor* t_memOverride = nullptr;
+
+inline void SetThreadMemAccessor(IMemoryAccessor* accessor)
+{
+    t_memOverride = accessor;
+}
+
+inline void ClearThreadMemAccessor()
+{
+    t_memOverride = nullptr;
+}
+
 inline const IMemoryAccessor& Mem()
 {
+    if (t_memOverride)
+    {
+        return *t_memOverride;
+    }
     return *Ctx().mem;
 }
 

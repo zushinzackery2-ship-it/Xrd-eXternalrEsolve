@@ -48,6 +48,7 @@
 | **W2S** | 内置 WorldToScreen 投影 |
 | **反射式字段访问** | `ReadActorFieldPtr/Int32/Float` 通过属性名自动查找偏移（带缓存），无需硬编码 |
 | **共享内存通道** | `SharedMemoryAccessor` 通过内核驱动共享内存实现零 IOCTL 读取，支持多 slot 并行（最多 4 通道） |
+| **线程局部访问器** | `SetThreadMemAccessor()` 将当前线程绑定到独立通道，`Mem()` 自动返回线程局部覆盖，多线程零 mutex 争抢 |
 | **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule/ConvexMesh 碰撞体 |
 | **Chaos 碰撞读取** | 远程读取 UE5 Chaos 物理场景（FPhysScene_Chaos），通过反射自动发现 BodyInstance/PhysicsProxy/AggGeom 偏移 |
 | **Embree 遮挡检测** | 基于 Embree 的 raycast 遮挡查询，支持碰撞体曲面细分与 BVH 加速 |
@@ -66,6 +67,8 @@
 |  | `SetGObjects(rva)` / `SetGNames(rva)` / `SetGWorld(rva)` | 手动设置 RVA（AutoInit 前调用） |
 | **共享内存** | `SharedMemoryAccessor::Open(device, pid)` | 通过驱动共享内存初始化（自动分配 slot） |
 |  | `SharedMemoryAccessor::Open(device, pid, slotId)` | 指定 slot 初始化（多通道隔离） |
+| **线程绑定** | `SetThreadMemAccessor(accessor)` | 将当前线程的 `Mem()` 绑定到指定访问器（多通道隔离） |
+|  | `ClearThreadMemAccessor()` | 清除当前线程绑定，恢复使用全局通道 |
 | **World** | `GetUWorld()` | 获取 UWorld 指针 |
 |  | `GetPlayerController()` | 链式获取本地 PlayerController |
 |  | `GetAPawn()` | 链式获取本地 Pawn |
@@ -200,6 +203,7 @@ IMemoryAccessor（纯虚接口）
 - **WinApiMemoryAccessor**：基于 `ReadProcessMemory`，开箱即用
 - **DriverMemoryAccessor**：通过驱动 IOCTL 读写，需配合内核驱动
 - **SharedMemoryAccessor**：通过内核共享内存 + Event 实现零 IOCTL 读取，adaptive spinning（先自旋 4000 次再 Event 等待），支持最多 4 个并行通道（slotId 隔离）
+- **线程局部覆盖**：`SetThreadMemAccessor()` 设置 `thread_local` 指针，`Mem()` 优先返回线程局部覆盖；多个工作线程各自绑定独立 slot，完全消除 mutex 争抢
 
 ---
 
@@ -258,6 +262,7 @@ AutoInit()
 | **UObject 名称缓存** | `std::shared_mutex` | `GetObjectName` / `GetFFieldName` 并发安全 |
 | **类名缓存** | `std::shared_mutex` | `GetObjectClassName` / `GetFFieldClassName` 并发安全 |
 | **属性偏移缓存** | `std::shared_mutex` | `GetPropertyOffsetByName` 同一 class+属性只遍历一次，后续并发读 |
+| **线程局部访问器** | `thread_local` | `SetThreadMemAccessor` / `ClearThreadMemAccessor` 无锁绑定，各线程独立通道 |
 | **骨骼名缓存** | `std::mutex` | `GetCachedBoneNames` / `PrecacheBoneNames` 互斥保护 |
 
 多线程场景下可安全地从不同线程并发调用上述 API。

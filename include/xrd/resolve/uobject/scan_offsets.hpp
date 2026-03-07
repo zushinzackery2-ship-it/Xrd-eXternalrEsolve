@@ -104,23 +104,34 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
     std::cerr << "[xrd] 采样 " << samples.size() << " 个对象用于偏移发现\n";
 
     // ─── 发现 Class 偏移（指向另一个合法 UObject 的指针） ───
-    for (i32 classOff : {0x10, 0x18, 0x08})
+    // 选命中率最高且超过 50% 的候选（GObjects 槽位可能有已销毁对象）
     {
-        int validCount = 0;
-        for (auto obj : samples)
+        i32 bestOff = -1;
+        int bestCount = 0;
+        for (i32 classOff : {0x10, 0x18, 0x08})
         {
-            uptr classPtr = 0;
-            if (ReadPtr(mem, obj + classOff, classPtr) && IsCanonicalUserPtr(classPtr))
+            int validCount = 0;
+            for (auto obj : samples)
             {
-                validCount++;
+                uptr classPtr = 0;
+                if (ReadPtr(mem, obj + classOff, classPtr) && IsCanonicalUserPtr(classPtr))
+                {
+                    validCount++;
+                }
+            }
+            std::cerr << "[xrd] Class 候选 +0x" << std::hex << classOff << std::dec
+                      << " 命中: " << validCount << "/" << samples.size() << "\n";
+            if (validCount > bestCount)
+            {
+                bestCount = validCount;
+                bestOff = classOff;
             }
         }
-        if (validCount > (int)samples.size() * 80 / 100)
+        if (bestOff != -1 && bestCount > (int)samples.size() * 50 / 100)
         {
-            off.UObject_Class = classOff;
-            std::cerr << "[xrd] UObject::Class +0x" << std::hex << classOff
-                      << std::dec << " (命中: " << validCount << ")\n";
-            break;
+            off.UObject_Class = bestOff;
+            std::cerr << "[xrd] UObject::Class +0x" << std::hex << bestOff
+                      << std::dec << " (命中: " << bestCount << ")\n";
         }
     }
 
@@ -142,7 +153,9 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
                 matchCount++;
             }
         }
-        if (matchCount > 50)
+        std::cerr << "[xrd] Index 候选 +0x" << std::hex << idxOff << std::dec
+                  << " 匹配: " << matchCount << "/100\n";
+        if (matchCount > 20)
         {
             off.UObject_Index = idxOff;
             std::cerr << "[xrd] UObject::Index +0x" << std::hex << idxOff
@@ -198,7 +211,9 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
                 }
             }
         }
-        if (validCount > 30)
+        std::cerr << "[xrd] Name 候选 +0x" << std::hex << nameOff << std::dec
+                  << " 命中: " << validCount << "/50\n";
+        if (validCount > 15)
         {
             off.UObject_Name = nameOff;
             std::cerr << "[xrd] UObject::Name +0x" << std::hex << nameOff
