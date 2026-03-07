@@ -3,8 +3,8 @@
 // ViewProjection 矩阵读取和坐标变换
 
 #include "../core/context.hpp"
-#include "../engine/bones.hpp"
-#include "../engine/world_actors.hpp"
+#include "../engine/bones/bones.hpp"
+#include "../engine/world/world_actors.hpp"
 #include <cmath>
 
 namespace xrd
@@ -40,8 +40,9 @@ inline bool GetVPMatrix(FMatrix& out)
         return false;
     }
 
-    // Canvas 对象 + 0x280 -> ViewProjection 矩阵
-    uptr matrixAddr = canvasObj + 0x280;
+    // Canvas 对象 -> ViewProjection 矩阵
+    // float 精度时偏移 0x280，double 精度时前面的 FVector/FMatrix 成员膨胀，偏移变为 0x2F0
+    uptr matrixAddr = canvasObj + (Off().bUseDoublePrecision ? 0x2F0 : 0x280);
 
     if (Off().bUseDoublePrecision)
     {

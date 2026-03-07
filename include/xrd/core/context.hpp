@@ -3,9 +3,10 @@
 // 保存运行时状态：进程句柄、偏移表、内存访问器
 
 #include "types.hpp"
-#include "memory.hpp"
+#include "../memory/memory.hpp"
 #include "process.hpp"
 #include "process_sections.hpp"
+#include "../chaos/chaos_types.hpp"
 #include <memory>
 #include <iostream>
 #include <mutex>
@@ -128,9 +129,21 @@ struct UEOffsets
     // AppendString
     uptr AppendNameToString = 0;
 
+    // 物理后端检测结果
+    enum PhysicsBackend : u8
+    {
+        ePhysicsUnknown = 0,
+        ePhysX          = 1,
+        eChaos          = 2
+    };
+    PhysicsBackend physicsBackend = ePhysicsUnknown;
+
     // PhysX
     uptr PhysXDllBase    = 0;   // PhysX3_x64.dll 基址
     uptr PhysXGlobalPtr  = 0;   // NpPhysics* 全局实例指针值
+
+    // Chaos（偏移表独立存放在 ChaosOffsets 中）
+    uptr ChaosPhysScene  = 0;   // FPhysScene_Chaos* 地址
 };
 
 // ─── 全局上下文 ───
@@ -143,6 +156,7 @@ struct Context
     std::vector<SectionCache> sections;
 
     UEOffsets off;
+    ChaosOffsets chaosOff;
 
     std::unique_ptr<IMemoryAccessor> mem;
 
@@ -170,6 +184,7 @@ inline void ResetContext()
     ctx.mainModule = ModuleInfo{};
     ctx.sections.clear();
     ctx.off = UEOffsets{};
+    ctx.chaosOff = ChaosOffsets{};
     ctx.mem.reset();
     ctx.inited = false;
 }

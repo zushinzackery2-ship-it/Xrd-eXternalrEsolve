@@ -3,7 +3,7 @@
 // 进程查找、模块枚举、PE 段缓存
 
 #include "types.hpp"
-#include "memory.hpp"
+#include "../memory/memory.hpp"
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <Psapi.h>

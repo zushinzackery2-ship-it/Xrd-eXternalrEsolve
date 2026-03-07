@@ -3,6 +3,7 @@
 // 从 process.hpp 拆分：远程读取 PE 头并缓存各段数据
 
 #include "process.hpp"
+#include <iostream>
 
 namespace xrd
 {
@@ -63,11 +64,41 @@ inline bool CacheSections(
         sc.size = sh.Misc.VirtualSize;
 
         // 缓存段数据到本地
-        sc.data.resize(sc.size);
-        if (mem.Read(sc.va, sc.data.data(), sc.size))
+        // 大段（>64KB）分块读取并容忍部分失败，避免 .text 等大段因单块超时丢失
+        sc.data.resize(sc.size, 0);
+        constexpr u32 kReadChunk = 1 * 1024 * 1024; // 1MB
+        if (sc.size <= 0x10000)
         {
-            sections.push_back(std::move(sc));
+            // 小段一次读完
+            if (!mem.Read(sc.va, sc.data.data(), sc.size))
+            {
+                continue;
+            }
         }
+        else
+        {
+            // 大段分块读取，失败块填零但不中断
+            u32 goodChunks = 0, totalChunks = 0;
+            for (u32 off = 0; off < sc.size; off += kReadChunk)
+            {
+                u32 len = (sc.size - off < kReadChunk) ? (sc.size - off) : kReadChunk;
+                totalChunks++;
+                if (mem.Read(sc.va + off, sc.data.data() + off, len))
+                {
+                    goodChunks++;
+                }
+            }
+            if (goodChunks == 0)
+            {
+                continue;
+            }
+            if (goodChunks < totalChunks)
+            {
+                std::cerr << "[xrd] 段 " << sc.name
+                          << " 部分读取: " << goodChunks << "/" << totalChunks << " 块\n";
+            }
+        }
+        sections.push_back(std::move(sc));
     }
 
     return !sections.empty();
