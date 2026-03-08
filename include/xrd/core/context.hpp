@@ -196,23 +196,63 @@ inline bool IsInited()
 
 // 线程局部内存访问器覆盖：设置后该线程的 Mem() 返回此指针而非全局通道
 // 用于多通道共享内存场景，每个工作线程绑定独立 slot 消除 mutex 争抢
-inline thread_local IMemoryAccessor* t_memOverride = nullptr;
+// 注意：不使用 thread_local 关键字，因为手动映射注入时 TLS 目录未被 loader 处理，
+// 访问 thread_local 会导致 ACCESS_VIOLATION。改用 TlsAlloc API。
+inline DWORD g_memOverrideTlsIndex = TLS_OUT_OF_INDEXES;
+inline LONG  g_memOverrideTlsInitState = 0;
+
+inline DWORD GetMemOverrideTlsIndex()
+{
+    DWORD idx = g_memOverrideTlsIndex;
+    if (idx != TLS_OUT_OF_INDEXES)
+    {
+        return idx;
+    }
+
+    if (InterlockedCompareExchange(&g_memOverrideTlsInitState, 1, 0) == 0)
+    {
+        idx = TlsAlloc();
+        g_memOverrideTlsIndex = idx;
+    }
+    else
+    {
+        while ((idx = g_memOverrideTlsIndex) == TLS_OUT_OF_INDEXES)
+        {
+            SwitchToThread();
+        }
+    }
+
+    return idx;
+}
 
 inline void SetThreadMemAccessor(IMemoryAccessor* accessor)
 {
-    t_memOverride = accessor;
+    DWORD idx = GetMemOverrideTlsIndex();
+    if (idx != TLS_OUT_OF_INDEXES)
+    {
+        TlsSetValue(idx, accessor);
+    }
 }
 
 inline void ClearThreadMemAccessor()
 {
-    t_memOverride = nullptr;
+    DWORD idx = g_memOverrideTlsIndex;
+    if (idx != TLS_OUT_OF_INDEXES)
+    {
+        TlsSetValue(idx, nullptr);
+    }
 }
 
 inline const IMemoryAccessor& Mem()
 {
-    if (t_memOverride)
+    DWORD idx = g_memOverrideTlsIndex;
+    if (idx != TLS_OUT_OF_INDEXES)
     {
-        return *t_memOverride;
+        auto* override = (IMemoryAccessor*)TlsGetValue(idx);
+        if (override)
+        {
+            return *override;
+        }
     }
     return *Ctx().mem;
 }

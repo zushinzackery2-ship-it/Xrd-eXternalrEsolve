@@ -82,6 +82,8 @@ inline void PrintInitSummary()
               << resolve::GetObjectCount(*ctx.mem, ctx.off) << "\n";
 }
 
+inline bool ValidateCriticalValues(bool includeWorldChain = true);
+
 // 公共扫描逻辑
 // 前置条件：ctx.mem / ctx.mainModule / ctx.pid 已设置
 inline bool DoCommonScanAndDiscover()
@@ -248,15 +250,24 @@ inline bool DoCommonScanAndDiscover()
         }
     }
 
+    if (!ValidateCriticalValues(false))
+    {
+        return false;
+    }
+
     // 标记初始化完成（后续 FindClassByName 等高层 API 依赖此标志）
     ctx.inited = true;
+    std::cerr << "[xrd] ctx.inited = true\n";
 
     // World 链偏移发现（必须在 InitChaosOffsets 之前，actor-walking 依赖 PersistentLevel/Actors 偏移）
+    std::cerr << "[xrd] DiscoverWorldChainOffsets 开始...\n"; std::cerr.flush();
     DiscoverWorldChainOffsets(ctx);
+    std::cerr << "[xrd] DiscoverWorldChainOffsets 完成\n"; std::cerr.flush();
 
     // FVector 精度检测（通过反射读取 RelativeLocation.ElementSize: 24=double, 12=float）
     {
         bool isDouble = false;
+        std::cerr << "[xrd] GetAllActors 开始...\n"; std::cerr.flush();
         auto actors = GetAllActors();
         bool detected = false;
         for (i32 i = 0; i < std::min((i32)actors.size(), (i32)20); ++i)
@@ -329,7 +340,7 @@ inline bool DoCommonScanAndDiscover()
 }
 
 // 验证关键值：全部有效返回 true，任一缺失则打印并返回 false
-inline bool ValidateCriticalValues()
+inline bool ValidateCriticalValues(bool includeWorldChain)
 {
     auto& ctx = Ctx();
     bool allValid = true;
@@ -351,13 +362,15 @@ inline bool ValidateCriticalValues()
     check(ctx.off.ProcessEvent_VTableIndex >= 0,   "ProcessEventIdx");
     check(ctx.off.AppendNameToString != 0,         "AppendString");
 
-    // World 链反射偏移
-    check(ctx.off.UWorld_PersistentLevel >= 0,             "UWorld_PersistentLevel");
-    check(ctx.off.UWorld_OwningGameInstance >= 0,           "UWorld_OwningGameInstance");
-    check(ctx.off.UGameInstance_LocalPlayers >= 0,          "UGameInstance_LocalPlayers");
-    check(ctx.off.ULocalPlayer_PlayerController >= 0,      "ULocalPlayer_PlayerController");
-    check(ctx.off.ULevel_Actors >= 0,                      "ULevel_Actors");
-    check(ctx.off.APlayerController_Pawn >= 0,             "APlayerController_Pawn");
+    if (includeWorldChain)
+    {
+        check(ctx.off.UWorld_PersistentLevel >= 0,             "UWorld_PersistentLevel");
+        check(ctx.off.UWorld_OwningGameInstance >= 0,           "UWorld_OwningGameInstance");
+        check(ctx.off.UGameInstance_LocalPlayers >= 0,          "UGameInstance_LocalPlayers");
+        check(ctx.off.ULocalPlayer_PlayerController >= 0,       "ULocalPlayer_PlayerController");
+        check(ctx.off.ULevel_Actors >= 0,                       "ULevel_Actors");
+        check(ctx.off.APlayerController_Pawn >= 0,              "APlayerController_Pawn");
+    }
 
     return allValid;
 }

@@ -82,22 +82,7 @@ inline std::string GetObjectName(uptr obj)
     {
         return "";
     }
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::GetNameCacheMutex());
-        auto& cache = detail::GetNameCache();
-        auto it = cache.find(obj);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-    }
-    // 读取在锁外做，避免持锁时做内存读取
-    std::string name = ReadFNameAt(obj + Off().UObject_Name);
-    {
-        std::unique_lock<std::shared_mutex> wlock(detail::GetNameCacheMutex());
-        detail::GetNameCache()[obj] = name;
-    }
-    return name;
+    return ReadFNameAt(obj + Off().UObject_Name);
 }
 
 inline uptr GetObjectClass(uptr obj)
@@ -171,21 +156,7 @@ inline std::string GetObjectClassName(uptr obj)
     {
         return "";
     }
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::GetClassNameCacheMutex());
-        auto& cache = detail::GetClassNameCache();
-        auto it = cache.find(obj);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-    }
-    std::string name = GetObjectName(GetObjectClass(obj));
-    {
-        std::unique_lock<std::shared_mutex> wlock(detail::GetClassNameCacheMutex());
-        detail::GetClassNameCache()[obj] = name;
-    }
-    return name;
+    return GetObjectName(GetObjectClass(obj));
 }
 
 inline std::string GetObjectFullName(uptr obj)
@@ -295,21 +266,7 @@ inline std::string GetFFieldName(uptr ffield)
     {
         return "";
     }
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::GetNameCacheMutex());
-        auto& cache = detail::GetNameCache();
-        auto it = cache.find(ffield);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-    }
-    std::string name = ReadFNameAt(ffield + Off().FField_Name);
-    {
-        std::unique_lock<std::shared_mutex> wlock(detail::GetNameCacheMutex());
-        detail::GetNameCache()[ffield] = name;
-    }
-    return name;
+    return ReadFNameAt(ffield + Off().FField_Name);
 }
 
 inline uptr GetFFieldClass(uptr ffield)
@@ -329,30 +286,12 @@ inline std::string GetFFieldClassName(uptr ffield)
     {
         return "";
     }
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::GetClassNameCacheMutex());
-        auto& cache = detail::GetClassNameCache();
-        auto it = cache.find(ffield);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-    }
     uptr cls = GetFFieldClass(ffield);
-    std::string name;
     if (!cls)
     {
-        name = "";
+        return "";
     }
-    else
-    {
-        name = ReadFNameAt(cls + Off().FFieldClass_Name);
-    }
-    {
-        std::unique_lock<std::shared_mutex> wlock(detail::GetClassNameCacheMutex());
-        detail::GetClassNameCache()[ffield] = name;
-    }
-    return name;
+    return ReadFNameAt(cls + Off().FFieldClass_Name);
 }
 
 // ─── Property 读取 ───

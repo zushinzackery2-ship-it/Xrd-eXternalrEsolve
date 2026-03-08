@@ -152,20 +152,6 @@ inline i32 GetPropertyOffsetByName(uptr cls, const std::string& propName)
         return -1;
     }
 
-    detail::PropCacheKey key{cls, propName};
-
-    // 读缓存（共享锁，允许并发读）
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::PropOffsetCacheMutex());
-        auto& cache = detail::PropOffsetCache();
-        auto it = cache.find(key);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-    }
-
-    // 缓存未命中，遍历属性链
     i32 result = -1;
     uptr current = cls;
     while (current)
@@ -177,12 +163,6 @@ inline i32 GetPropertyOffsetByName(uptr cls, const std::string& propName)
             break;
         }
         current = GetSuperStruct(current);
-    }
-
-    // 写缓存（独占锁）
-    {
-        std::unique_lock<std::shared_mutex> wlock(detail::PropOffsetCacheMutex());
-        detail::PropOffsetCache()[key] = result;
     }
 
     return result;

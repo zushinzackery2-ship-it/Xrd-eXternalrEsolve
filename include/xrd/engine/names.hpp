@@ -207,21 +207,6 @@ inline std::string GetNameFromFName(i32 compIdx, i32 number = 0)
         return "";
     }
 
-    {
-        std::shared_lock<std::shared_mutex> rlock(detail::NameCacheMutex());
-        auto& cache = detail::NameCache();
-        auto it = cache.find(compIdx);
-        if (it != cache.end())
-        {
-            std::string result = it->second;
-            if (number > 0)
-            {
-                result += "_" + std::to_string(number - 1);
-            }
-            return result;
-        }
-    }
-
     std::string name;
     bool ok = false;
 
@@ -236,14 +221,11 @@ inline std::string GetNameFromFName(i32 compIdx, i32 number = 0)
 
     if (ok && !name.empty())
     {
-        std::unique_lock<std::shared_mutex> wlock(detail::NameCacheMutex());
-        detail::NameCache()[compIdx] = name;
-        std::string result = name;
         if (number > 0)
         {
-            result += "_" + std::to_string(number - 1);
+            name += "_" + std::to_string(number - 1);
         }
-        return result;
+        return name;
     }
 
     return "";

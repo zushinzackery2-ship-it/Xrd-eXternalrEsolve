@@ -82,34 +82,57 @@ namespace detail
 
         uptr lpClass = GetObjectClass(lp0);
         if (lpClass && ctx.off.ULocalPlayer_PlayerController == -1)
+        {
+            std::cerr << "[xrd] ULocalPlayer类: 0x" << std::hex << lpClass << std::dec << "\n";
+            std::cerr << "[xrd] 尝试反射查找PlayerController属性...\n";
             ctx.off.ULocalPlayer_PlayerController = GetPropertyOffsetByName(lpClass, "PlayerController");
+            std::cerr << "[xrd] PlayerController偏移: " << ctx.off.ULocalPlayer_PlayerController << "\n";
+        }
 
         if (ctx.off.ULocalPlayer_PlayerController == -1)
         {
+            std::cerr << "[xrd] ERROR: 无法找到ULocalPlayer::PlayerController属性\n";
             return;
         }
 
         uptr pc = 0;
         if (!ReadPtr(*ctx.mem, lp0 + ctx.off.ULocalPlayer_PlayerController, pc) || !IsCanonicalUserPtr(pc))
         {
+            std::cerr << "[xrd] PlayerController实例无效: pc=0x" << std::hex << pc << std::dec << "\n";
             return;
         }
+
+        std::cerr << "[xrd] PlayerController实例: 0x" << std::hex << pc << std::dec << "\n";
 
         uptr pcClass = GetObjectClass(pc);
         if (!pcClass)
         {
+            std::cerr << "[xrd] 无法获取PlayerController类\n";
             return;
         }
 
+        std::cerr << "[xrd] PlayerController类: 0x" << std::hex << pcClass << std::dec << "\n";
+
         if (ctx.off.APlayerController_Pawn == -1)
         {
+            std::cerr << "[xrd] 尝试反射查找Pawn属性...\n";
             i32 pawnOff = GetPropertyOffsetByName(pcClass, "Pawn");
+            std::cerr << "[xrd] Pawn偏移: " << pawnOff << "\n";
             if (pawnOff == -1)
+            {
+                std::cerr << "[xrd] 尝试反射查找AcknowledgedPawn属性...\n";
                 pawnOff = GetPropertyOffsetByName(pcClass, "AcknowledgedPawn");
+                std::cerr << "[xrd] AcknowledgedPawn偏移: " << pawnOff << "\n";
+            }
             ctx.off.APlayerController_Pawn = pawnOff;
         }
         if (ctx.off.APlayerController_PlayerCameraManager == -1)
-            ctx.off.APlayerController_PlayerCameraManager = GetPropertyOffsetByName(pcClass, "PlayerCameraManager");
+        {
+            std::cerr << "[xrd] 尝试反射查找PlayerCameraManager属性...\n";
+            i32 camOff = GetPropertyOffsetByName(pcClass, "PlayerCameraManager");
+            std::cerr << "[xrd] PlayerCameraManager偏移: " << camOff << "\n";
+            ctx.off.APlayerController_PlayerCameraManager = camOff;
+        }
 
         std::cerr << "[xrd] World链偏移（延迟发现）:\n";
         std::cerr << "  PersistentLevel: +0x" << std::hex << ctx.off.UWorld_PersistentLevel << std::dec << "\n";
