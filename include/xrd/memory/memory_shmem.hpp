@@ -17,6 +17,8 @@ namespace ShmemCmd
     inline constexpr LONG None  = 0;
     inline constexpr LONG Read  = 1;
     inline constexpr LONG Write = 2;
+    inline constexpr LONG Mouse = 3;
+    inline constexpr LONG MouseSetup = 4;
 }
 
 // 共享内存参数（与驱动 shared_mem.h 一致）
@@ -37,6 +39,17 @@ namespace ReadMethod
     inline constexpr u32 MmCpy = 0x01;
 }
 
+struct SharedMouseInputData
+{
+    u16 UnitId;
+    u16 Flags;
+    u32 Buttons;
+    u32 RawButtons;
+    i32 LastX;
+    i32 LastY;
+    u32 ExtraInformation;
+};
+
 // 共享内存控制头（与驱动 SHARED_MEM_HEADER 布局完全一致）
 struct SharedMemHeader
 {
@@ -51,6 +64,10 @@ struct SharedMemHeader
     LONG status;                    // +0x24 (NTSTATUS)
     u32 bytesRead;                  // +0x28
     u32 reserved[5];                // +0x2C 填充到 0x40
+    SharedMouseInputData mouseData; // +0x40
+    u64 mouseSetupSubRsp70Rva;      // +0x58
+    u32 mouseSetupStubSize;         // +0x60
+    u32 reserved2;                  // +0x64
 };
 
 // IOCTL 初始化请求/响应（与驱动一致）
@@ -203,6 +220,38 @@ public:
     u32 GetPid() const { return m_pid; }
     bool IsSharedMemReady() const { return m_header != nullptr; }
 
+    bool SendMouseEvent(const SharedMouseInputData& mouseData)
+    {
+        if (!m_header)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_header->command = ShmemCmd::Mouse;
+        m_header->status = 0;
+        m_header->bytesRead = 0;
+        m_header->mouseData = mouseData;
+        return SubmitRequestLocked() && m_header->status >= 0;
+    }
+
+    bool SetupMouseHook(u64 subRsp70Rva, const void* stubBytes, u32 stubSize)
+    {
+        if (!m_header || !stubBytes || stubSize == 0 || stubSize > ShmemConst::MaxData)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::memcpy(m_dataPtr, stubBytes, stubSize);
+        m_header->command = ShmemCmd::MouseSetup;
+        m_header->status = 0;
+        m_header->bytesRead = 0;
+        m_header->mouseSetupSubRsp70Rva = subRsp70Rva;
+        m_header->mouseSetupStubSize = stubSize;
+        return SubmitRequestLocked() && m_header->status >= 0;
+    }
+
     ~SharedMemoryAccessor()
     {
         DestroySharedMem();
@@ -263,24 +312,10 @@ public:
     }
 
 private:
-    // 单次共享内存读取（size <= MaxData）
-    // 共享内存通道是单通道，多线程并发必须序列化
-    bool ReadSingle(uptr address, void* buffer, u32 size) const
+    bool SubmitRequestLocked() const
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
-
-        // 填写请求
-        m_header->command = ShmemCmd::Read;
-        m_header->pid     = m_pid;
-        m_header->address = static_cast<u64>(address);
-        m_header->size    = size;
-        m_header->method  = ReadMethod::CR3;
-        m_header->status  = 0;
-        m_header->bytesRead = 0;
-
         _mm_sfence();  // 确保写入对驱动可见
 
-        // 发起请求
         InterlockedExchange(&m_header->responseReady, 0);
         InterlockedExchange(&m_header->requestReady, 1);
 
@@ -289,10 +324,8 @@ private:
             SetEvent(m_requestEvent);
         }
 
-        // 等待响应：adaptive spinning
         BOOL gotResponse = FALSE;
 
-        // 阶段 1: 自旋
         for (u32 i = 0; i < ShmemConst::SpinThreshold; ++i)
         {
             if (InterlockedCompareExchange(&m_header->responseReady, 0, 1) == 1)
@@ -303,7 +336,6 @@ private:
             _mm_pause();
         }
 
-        // 阶段 2: Event 等待
         if (!gotResponse && m_responseEvent)
         {
             WaitForSingleObject(m_responseEvent, ShmemConst::EventTimeoutMs);
@@ -319,6 +351,28 @@ private:
         }
 
         _mm_lfence();  // 确保读取有序
+        return true;
+    }
+
+    // 单次共享内存读取（size <= MaxData）
+    // 共享内存通道是单通道，多线程并发必须序列化
+    bool ReadSingle(uptr address, void* buffer, u32 size) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        // 填写请求
+        m_header->command = ShmemCmd::Read;
+        m_header->pid     = m_pid;
+        m_header->address = static_cast<u64>(address);
+        m_header->size    = size;
+        m_header->method  = ReadMethod::CR3;
+        m_header->status  = 0;
+        m_header->bytesRead = 0;
+
+        if (!SubmitRequestLocked())
+        {
+            return false;
+        }
 
         // 拷贝结果
         if (m_header->status >= 0 && m_header->bytesRead > 0)

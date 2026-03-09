@@ -4,6 +4,10 @@
 # 不忽略目录结构（git 需要目录才能追踪子文件）
 !*/
 
+# 本地联调用的嵌套仓库 / 临时目录不属于 Xrd 仓库内容
+RainGui-main/
+Imgui/
+
 # 保留的文件
 !include/**
 !README.md
