@@ -123,50 +123,19 @@ inline int GetValidBoneArrayIndex(
         return (activeIdx & 1);
     }
 
-    // 回退方案：检查哪个缓冲区包含有效变换
-    for (int bufIdx = 0; bufIdx < 2; ++bufIdx)
+    // 回退方案：检查 buffer[0] 的 Data 指针是否为空
+    // 对标教程逻辑：int BoneTransIdx = Mesh->BoneTransForm[0].Data ? 0 : 1;
+    uptr arrayData0 = 0;
+    if (ReadPtr(mem, meshComponent + boneArrayOffset, arrayData0) &&
+        arrayData0 != 0 &&
+        IsCanonicalUserPtr(arrayData0))
     {
-        uptr arrayData = 0;
-        i32 arrayCount = 0;
-        i32 arrayOff = boneArrayOffset + bufIdx * 0x10;
-
-        if (!ReadPtr(mem, meshComponent + arrayOff, arrayData))
-        {
-            continue;
-        }
-        if (!IsCanonicalUserPtr(arrayData))
-        {
-            continue;
-        }
-
-        ReadValue(mem, meshComponent + arrayOff + 8, arrayCount);
-        if (arrayCount <= 0 || arrayCount > 500)
-        {
-            continue;
-        }
-
-        // 验证第一个骨骼变换的 W 分量
-        if (isDouble)
-        {
-            double qw = 0;
-            mem.Read(arrayData + 0x18, &qw, 8);
-            if (std::isfinite(qw) && std::abs(qw) > 0.01 && std::abs(qw) <= 1.0)
-            {
-                return bufIdx;
-            }
-        }
-        else
-        {
-            float qw = 0;
-            mem.Read(arrayData + 0x0C, &qw, 4);
-            if (std::isfinite(qw) && std::abs(qw) > 0.01f && std::abs(qw) <= 1.0f)
-            {
-                return bufIdx;
-            }
-        }
+        return 0;  // buffer[0] 有效，使用 0
     }
-
-    return 0;
+    else
+    {
+        return 1;  // buffer[0] 无效，使用 1
+    }
 }
 
 // 对标 UnrealResolve::ScanRefSkeletonBoneInfoOffset
