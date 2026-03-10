@@ -238,17 +238,6 @@ inline void TessellateConvex(
         return;
     }
 
-    // 计算重心
-    float cx = 0, cy = 0, cz = 0;
-    for (auto& v : shape.convexVerts)
-    {
-        cx += v.x;
-        cy += v.y;
-        cz += v.z;
-    }
-    float n = (float)shape.convexVerts.size();
-    cx /= n; cy /= n; cz /= n;
-
     unsigned base = (unsigned)(mesh.verts.size() / 3);
 
     for (auto& v : shape.convexVerts)
@@ -259,14 +248,51 @@ inline void TessellateConvex(
         mesh.verts.push_back(wy);
         mesh.verts.push_back(wz);
     }
-    // 重心顶点
+
+    if (shape.convexTriangles.size() >= 3)
     {
-        float wx, wy, wz;
-        detail::TransformVertex(pose, cx, cy, cz, wx, wy, wz);
-        mesh.verts.push_back(wx);
-        mesh.verts.push_back(wy);
-        mesh.verts.push_back(wz);
+        for (std::size_t i = 0; i + 2 < shape.convexTriangles.size(); i += 3)
+        {
+            u8 a = shape.convexTriangles[i];
+            u8 b = shape.convexTriangles[i + 1];
+            u8 c = shape.convexTriangles[i + 2];
+
+            if (a >= shape.convexVerts.size()
+                || b >= shape.convexVerts.size()
+                || c >= shape.convexVerts.size())
+            {
+                continue;
+            }
+
+            mesh.indices.push_back(base + a);
+            mesh.indices.push_back(base + b);
+            mesh.indices.push_back(base + c);
+        }
+        return;
     }
+
+    // 旧路径只适合没有面数据时兜底，精度不如真实面三角化。
+    float cx = 0.0f;
+    float cy = 0.0f;
+    float cz = 0.0f;
+    for (auto& v : shape.convexVerts)
+    {
+        cx += v.x;
+        cy += v.y;
+        cz += v.z;
+    }
+    float n = (float)shape.convexVerts.size();
+    cx /= n;
+    cy /= n;
+    cz /= n;
+
+    float wx = 0.0f;
+    float wy = 0.0f;
+    float wz = 0.0f;
+    detail::TransformVertex(pose, cx, cy, cz, wx, wy, wz);
+    mesh.verts.push_back(wx);
+    mesh.verts.push_back(wy);
+    mesh.verts.push_back(wz);
     unsigned centerIdx = base + (unsigned)shape.convexVerts.size();
 
     for (auto& edge : shape.convexEdges)

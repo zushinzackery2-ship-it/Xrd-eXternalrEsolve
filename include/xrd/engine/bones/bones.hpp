@@ -118,9 +118,7 @@ inline bool ReadBoneTransforms(uptr meshComponent, std::vector<FTransform>& outB
     // 选择有效的双缓冲索引
     int validBuf = resolve::GetValidBoneArrayIndex(
         Mem(), meshComponent,
-        off.ComponentSpaceTransforms_Offset,
-        off.BoneSpaceTransforms_ActiveIndex,
-        off.bUseDoublePrecision
+        off.ComponentSpaceTransforms_Offset
     );
 
     i32 arrayOffset = off.ComponentSpaceTransforms_Offset + validBuf * 0x10;

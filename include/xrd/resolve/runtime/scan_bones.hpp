@@ -106,36 +106,24 @@ inline i32 ScanComponentToWorldOffset(
 inline int GetValidBoneArrayIndex(
     const IMemoryAccessor& mem,
     uptr meshComponent,
-    i32 boneArrayOffset,
-    i32 activeIndexOffset,
-    bool isDouble)
+    i32 boneArrayOffset)
 {
     if (!IsCanonicalUserPtr(meshComponent))
     {
         return 0;
     }
 
-    // 优先使用引擎提供的活跃缓冲索引
-    if (activeIndexOffset != -1)
-    {
-        i32 activeIdx = 0;
-        ReadValue(mem, meshComponent + activeIndexOffset, activeIdx);
-        return (activeIdx & 1);
-    }
-
-    // 回退方案：检查 buffer[0] 的 Data 指针是否为空
-    // 对标教程逻辑：int BoneTransIdx = Mesh->BoneTransForm[0].Data ? 0 : 1;
+    // 当前只用 TArray 的 Data 是否有效来判断活跃缓冲。
+    // 这里不再依赖额外索引字段，避免把未实现的可选扫描链路继续向外扩散。
     uptr arrayData0 = 0;
     if (ReadPtr(mem, meshComponent + boneArrayOffset, arrayData0) &&
         arrayData0 != 0 &&
         IsCanonicalUserPtr(arrayData0))
     {
-        return 0;  // buffer[0] 有效，使用 0
+        return 0;
     }
-    else
-    {
-        return 1;  // buffer[0] 无效，使用 1
-    }
+
+    return 1;
 }
 
 // 对标 UnrealResolve::ScanRefSkeletonBoneInfoOffset

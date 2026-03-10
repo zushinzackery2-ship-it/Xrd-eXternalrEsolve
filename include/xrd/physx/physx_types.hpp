@@ -111,6 +111,7 @@ struct PxShapeData
     // ConvexMesh 数据（仅 eCONVEXMESH 有效）
     std::vector<PxVec3> convexVerts;
     std::vector<std::pair<u8, u8>> convexEdges;
+    std::vector<u8> convexTriangles;
 };
 
 // ─── 解析后的 actor 数据 ───
@@ -177,6 +178,7 @@ inline CollisionScene ToCollisionScene(const PxSceneData& pxData)
                         cs.convexVerts.push_back({v.x, v.y, v.z});
                     }
                     cs.convexEdges = ps.convexEdges;
+                    cs.convexTriangles = ps.convexTriangles;
                     break;
                 default:
                     continue;

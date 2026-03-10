@@ -109,7 +109,6 @@ struct UEOffsets
     bool kAutoScanUSceneComponentComponentToWorld = true;
     i32  ComponentToWorld_Offset          = -1;
     i32  ComponentSpaceTransforms_Offset  = -1;
-    i32  BoneSpaceTransforms_ActiveIndex  = -1;
     i32  RefSkeletonBoneInfo_Offset       = -1;
 
     // Actor/Pawn 链

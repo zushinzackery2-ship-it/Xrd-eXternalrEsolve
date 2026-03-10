@@ -10,6 +10,24 @@
 namespace xrd
 {
 
+inline bool ReadComponentWorldPos(uptr component, FVector& outPos)
+{
+    outPos = {};
+    if (!component)
+    {
+        return false;
+    }
+
+    FTransform c2w;
+    if (!ReadComponentToWorld(component, c2w))
+    {
+        return false;
+    }
+
+    outPos = c2w.Translation;
+    return IsFiniteReal(outPos.X) && IsFiniteReal(outPos.Y) && IsFiniteReal(outPos.Z);
+}
+
 // 通过 DebugCanvasObject 链路动态读取 ViewProjection 矩阵
 // 链路: [DebugCanvasObjCacheAddr] -> +0x20 -> +0x280 -> 4x4 矩阵
 inline bool GetVPMatrix(FMatrix& out)
@@ -95,6 +113,25 @@ inline bool WorldToScreen(const FVector& worldPos, i32 screenW, i32 screenH, FVe
     return true;
 }
 
+// 只读取 Actor 的 RootComponent 世界坐标。
+// APawnBase 语义必须保持纯净，不能在这里混入 Mesh 回退。
+inline bool GetActorRootWorldPos(uptr actor, FVector& outPos)
+{
+    outPos = {};
+    if (!actor)
+    {
+        return false;
+    }
+
+    uptr rootComp = ReadActorFieldPtr(actor, "RootComponent");
+    if (!rootComp)
+    {
+        return false;
+    }
+
+    return ReadComponentWorldPos(rootComp, outPos);
+}
+
 // 获取 Actor 的世界坐标
 inline bool GetActorWorldPos(uptr actor, FVector& outPos)
 {
@@ -104,26 +141,18 @@ inline bool GetActorWorldPos(uptr actor, FVector& outPos)
         return false;
     }
 
-    // 优先读取 RootComponent
-    uptr rootComp = ReadActorFieldPtr(actor, "RootComponent");
-    if (!rootComp)
+    if (GetActorRootWorldPos(actor, outPos))
     {
-        // 回退到 Mesh
-        rootComp = ReadActorFieldPtr(actor, "Mesh");
+        return true;
     }
-    if (!rootComp)
+
+    uptr meshComp = ReadActorFieldPtr(actor, "Mesh");
+    if (!meshComp)
     {
         return false;
     }
 
-    FTransform c2w;
-    if (!ReadComponentToWorld(rootComp, c2w))
-    {
-        return false;
-    }
-
-    outPos = c2w.Translation;
-    return IsFiniteReal(outPos.X) && IsFiniteReal(outPos.Y) && IsFiniteReal(outPos.Z);
+    return ReadComponentWorldPos(meshComp, outPos);
 }
 
 } // namespace xrd

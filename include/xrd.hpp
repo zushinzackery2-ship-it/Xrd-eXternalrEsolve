@@ -65,6 +65,11 @@
 
 // 便利函数层
 #include "xrd/helpers/w2s.hpp"
+#include "xrd/runtime/channel_pool.hpp"
+#include "xrd/runtime/view_state.hpp"
+#include "xrd/runtime/scene_watch.hpp"
+#include "xrd/runtime/actor_tracker.hpp"
+#include "xrd/runtime/bone_runtime.hpp"
 // dump: SDK 导出、类型解析、枚举收集
 #include "xrd/helpers/dump/dump_type_resolve.hpp"
 #include "xrd/helpers/dump/dump_enum.hpp"

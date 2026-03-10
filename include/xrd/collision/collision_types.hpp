@@ -109,6 +109,7 @@ struct CollisionShape
     // ConvexMesh 数据（仅 eGEOM_CONVEX 有效）
     std::vector<Vec3> convexVerts;
     std::vector<std::pair<u8, u8>> convexEdges;
+    std::vector<u8> convexTriangles;
 };
 
 // ─── 解析后的 actor 数据（引擎无关） ───

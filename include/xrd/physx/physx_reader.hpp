@@ -3,6 +3,7 @@
 // 从远程进程读取 PhysX scene/actor/shape 数据
 
 #include "physx_types.hpp"
+#include "physx_convex.hpp"
 #include "../memory/memory.hpp"
 
 namespace xrd
@@ -398,8 +399,6 @@ private:
     static constexpr u32 kConvex_Polygons       = 0x30;
     static constexpr u32 kConvex_NbVertices     = 0x4A;
     static constexpr u32 kConvex_NbPolygons     = 0x4B;
-    static constexpr u32 kHullPolygonDataSize   = 20;
-
     bool ReadConvexMeshData(uptr geomDataAddr, PxShapeData& outData) const
     {
         uptr meshPtr = 0;
@@ -435,60 +434,14 @@ private:
 
         if (nbPolys > 0 && IsCanonicalUserPtr(polysPtr))
         {
-            // 一次性批量读取全部多边形头（原来每个多边形 2 次 Read）
-            u32 polyBufSize = nbPolys * kHullPolygonDataSize;
-            std::vector<u8> polyBuf(polyBufSize);
-            m_mem.Read(polysPtr, polyBuf.data(), polyBufSize);
-
-            // 计算顶点索引区总大小并一次性读取
-            uptr vertRefBase = polysPtr + polyBufSize;
-            u32 totalIndices = 0;
-            for (u8 p = 0; p < nbPolys; ++p)
-            {
-                u16 vRef8 = *reinterpret_cast<u16*>(&polyBuf[p * kHullPolygonDataSize + 16]);
-                u8 polyNbVerts = polyBuf[p * kHullPolygonDataSize + 18];
-                if (polyNbVerts >= 3 && polyNbVerts <= 32)
-                {
-                    u32 end = static_cast<u32>(vRef8) + polyNbVerts;
-                    if (end > totalIndices) totalIndices = end;
-                }
-            }
-
-            std::vector<u8> allIndices(totalIndices);
-            if (totalIndices > 0)
-            {
-                m_mem.Read(vertRefBase, allIndices.data(), totalIndices);
-            }
-
-            // 从已缓存的数据中提取边
-            std::set<std::pair<u8, u8>> edgeSet;
-            for (u8 p = 0; p < nbPolys; ++p)
-            {
-                u16 vRef8 = *reinterpret_cast<u16*>(&polyBuf[p * kHullPolygonDataSize + 16]);
-                u8 polyNbVerts = polyBuf[p * kHullPolygonDataSize + 18];
-
-                if (polyNbVerts < 3 || polyNbVerts > 32)
-                {
-                    continue;
-                }
-                if (static_cast<u32>(vRef8) + polyNbVerts > totalIndices)
-                {
-                    continue;
-                }
-
-                for (u8 v = 0; v < polyNbVerts; ++v)
-                {
-                    u8 a = allIndices[vRef8 + v];
-                    u8 b = allIndices[vRef8 + (v + 1) % polyNbVerts];
-                    if (a > b) std::swap(a, b);
-                    if (a < nbVerts && b < nbVerts)
-                    {
-                        edgeSet.insert({ a, b });
-                    }
-                }
-            }
-
-            outData.convexEdges.assign(edgeSet.begin(), edgeSet.end());
+            ReadPhysXConvexTopology(
+                m_mem,
+                polysPtr,
+                nbPolys,
+                nbVerts,
+                outData.convexEdges,
+                outData.convexTriangles
+            );
         }
         return true;
     }

@@ -74,6 +74,8 @@ public:
         }
 
         RTCScene newScene = rtcNewScene(s_device);
+        // 遮挡查询更在意边界稳定性而不是极限构建速度，开启 ROBUST 可减少擦边瞬时漏判。
+        rtcSetSceneFlags(newScene, RTC_SCENE_FLAG_ROBUST);
         RTCGeometry geom = rtcNewGeometry(s_device, RTC_GEOMETRY_TYPE_TRIANGLE);
 
         float* vb = (float*)rtcSetNewGeometryBuffer(
@@ -137,15 +139,28 @@ public:
         dy *= inv;
         dz *= inv;
 
+        // 起点贴脸、终点贴边都容易触发 Embree 的边界不稳定判定。
+        // 这里把射线从起点向前挪一点，同时在终点前收一点，减少瞬时性漏判。
+        constexpr float kStartBias = 2.0f;
+        constexpr float kEndBias = 1.0f;
+
+        float startBias = (dist > kStartBias) ? kStartBias : (dist * 0.1f);
+        float endBias = (dist > kEndBias) ? kEndBias : (dist * 0.05f);
+        float traceDist = dist - startBias - endBias;
+        if (traceDist <= 1e-3f)
+        {
+            return false;
+        }
+
         RTCRay ray{};
-        ray.org_x = ox;
-        ray.org_y = oy;
-        ray.org_z = oz;
+        ray.org_x = ox + dx * startBias;
+        ray.org_y = oy + dy * startBias;
+        ray.org_z = oz + dz * startBias;
         ray.dir_x = dx;
         ray.dir_y = dy;
         ray.dir_z = dz;
         ray.tnear = 0.0f;
-        ray.tfar  = dist;
+        ray.tfar  = traceDist;
         ray.mask  = 0xFFFFFFFF;
         ray.flags = 0;
 
@@ -172,7 +187,8 @@ public:
         int occludedCount = 0;
         for (int i = 0; i < sampleCount; ++i)
         {
-            float t = (sampleCount == 1) ? 0.5f : (float)i / (float)(sampleCount - 1);
+            // 取每段中点而不是端点，避免骨骼端点恰好压在线/面边界时抖动。
+            float t = (float(i) + 0.5f) / float(sampleCount);
             float px = t1x + (t2x - t1x) * t;
             float py = t1y + (t2y - t1y) * t;
             float pz = t1z + (t2z - t1z) * t;
