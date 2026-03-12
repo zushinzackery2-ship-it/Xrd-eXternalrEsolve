@@ -39,7 +39,7 @@
 |:-----|:-----|
 | **Header-Only** | 单一入口 `#include <xrd.hpp>`，无需编译库文件 |
 | **全自动偏移发现** | `AutoInit()` 六阶段扫描 GObjects / GNames / GWorld / ProcessEvent / AppendString / GCanvas / PlayerController / Pawn / CameraManager 等全部关键偏移 |
-| **访问器抽象** | `IMemoryAccessor` 接口解耦算法与内存后端，提供 WinAPI / 驱动 IOCTL / 共享内存三种实现 |
+| **访问器抽象** | `IMemoryAccessor` 接口解耦算法与内存后端，提供 WinAPI 与可扩展自定义实现 |
 | **线程安全** | 名称缓存/属性偏移缓存均使用 `shared_mutex`，支持多线程并发读取 |
 | **SDK 导出** | 生成与 Dumper-7 格式对齐的 CppSDK，含 `#pragma pack` / `alignas` / trailing padding |
 | **World 链式访问** | `UWorld → GameInstance → LocalPlayers[0] → PlayerController → Pawn` 全链路偏移一次性缓存 |
@@ -47,8 +47,6 @@
 | **骨骼系统** | ComponentToWorld 自动扫描、双缓冲 ComponentSpaceTransforms、四元数合理性验证、按名称过滤式读取，并把骨骼数组扫描限制在 `USkinnedMeshComponent` 自身成员范围内 |
 | **W2S** | 内置 WorldToScreen 投影 |
 | **反射式字段访问** | `ReadActorFieldPtr/Int32/Float` 通过属性名自动查找偏移（带缓存），无需硬编码 |
-| **共享内存通道** | `SharedMemoryAccessor` 通过内核驱动共享内存实现零 IOCTL 读写，支持多 slot 并行（最多 4 通道） |
-| **共享内存鼠标** | 共享内存通道支持鼠标事件发送与鼠标 Hook 初始化，避免频繁单独 IOCTL |
 | **线程局部访问器** | `SetThreadMemAccessor()` 将当前线程绑定到独立通道，`Mem()` 自动返回线程局部覆盖，多线程零 mutex 争抢 |
 | **可取消初始化** | `SetAutoInitCancelCallback()` 支持在重试等待和扫描阶段中断 `AutoInit()`，取消时自动 `ResetContext()` |
 | **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule/ConvexMesh 碰撞体 |
@@ -68,10 +66,6 @@
 |  | `Off()` | 返回偏移结构 `UEOffsets` |
 |  | `SetGObjects(rva)` / `SetGNames(rva)` / `SetGWorld(rva)` | 手动设置 RVA（AutoInit 前调用） |
 |  | `SetAutoInitCancelCallback(callback)` | 设置取消回调，在 AutoInit 重试与扫描流程中提前终止 |
-| **共享内存** | `SharedMemoryAccessor::Open(device, pid)` | 通过驱动共享内存初始化（自动分配 slot） |
-|  | `SharedMemoryAccessor::Open(device, pid, slotId)` | 指定 slot 初始化（多通道隔离） |
-|  | `SharedMemoryAccessor::SendMouseEvent(mouseData)` | 通过共享内存发送鼠标事件 |
-|  | `SharedMemoryAccessor::SetupMouseHook(subRsp70Rva, stubBytes, stubSize)` | 通过共享内存下发鼠标 Hook 初始化参数 |
 | **线程绑定** | `SetThreadMemAccessor(accessor)` | 将当前线程的 `Mem()` 绑定到指定访问器（多通道隔离） |
 |  | `ClearThreadMemAccessor()` | 清除当前线程绑定，恢复使用全局通道 |
 | **World** | `GetUWorld()` | 获取 UWorld 指针 |
@@ -164,7 +158,7 @@ xrd::SetAutoInitCancelCallback([]() -> bool
     return g_stopRequested.load();
 });
 
-if (!xrd::AutoInitSharedMem(L"MyGame-Win64-Shipping.exe", L"ReiVMDrv"))
+if (!xrd::AutoInit(L"MyGame-Win64-Shipping.exe"))
 {
     // 如果回调返回 true，AutoInit 会立刻终止并自动 ResetContext()
 }
@@ -214,18 +208,16 @@ int main()
 IMemoryAccessor（纯虚接口）
     │  Read / Write / ReadBatch
     ▼
-┌─────────────────────┐  ┌─────────────────────┐  ┌──────────────────────────┐
-│ WinApiMemoryAccessor │  │ DriverMemoryAccessor │  │ SharedMemoryAccessor     │
-│ (ReadProcessMemory)  │  │ (驱动 IOCTL)         │  │ (共享内存零IOCTL, 多slot) │
-└─────────────────────┘  └─────────────────────┘  └──────────────────────────┘
+┌─────────────────────┐  ┌──────────────────────┐
+│ WinApiMemoryAccessor │  │ CustomMemoryAccessor │
+│ (ReadProcessMemory)  │  │ (用户自定义实现)      │
+└─────────────────────┘  └──────────────────────┘
 ```
 
 - **最小内存访问抽象**：所有算法只依赖 `IMemoryAccessor` 接口
 - **WinApiMemoryAccessor**：基于 `ReadProcessMemory`，开箱即用
-- **DriverMemoryAccessor**：通过驱动 IOCTL 读写，需配合内核驱动
-- **SharedMemoryAccessor**：通过内核共享内存 + Event 实现零 IOCTL 读写，adaptive spinning（先自旋 4000 次再 Event 等待），支持最多 4 个并行通道（slotId 隔离）
-- **共享内存鼠标控制**：同一通道额外支持 `SendMouseEvent()` 与 `SetupMouseHook()`，可把鼠标注入控制复用到共享内存链路
-- **线程局部覆盖**：`SetThreadMemAccessor()` 设置 `thread_local` 指针，`Mem()` 优先返回线程局部覆盖；多个工作线程各自绑定独立 slot，完全消除 mutex 争抢
+- **CustomMemoryAccessor**：可以按项目需求扩展自己的读取后端
+- **线程局部覆盖**：`SetThreadMemAccessor()` 设置 `thread_local` 指针，`Mem()` 优先返回线程局部覆盖；多个工作线程可以各自绑定独立访问器，减少争抢
 
 ---
 
@@ -308,8 +300,7 @@ Xrd-eXternalrEsolve/
 │       │   └── process_sections.hpp             #   PE 段缓存
 │       ├── memory/                              # 内存访问器
 │       │   ├── memory.hpp                       #   IMemoryAccessor 抽象 + WinAPI 实现
-│       │   ├── memory_driver.hpp                #   DriverMemoryAccessor (驱动 IOCTL)
-│       │   └── memory_shmem.hpp                 #   SharedMemoryAccessor (共享内存, 多slot)
+│       │   └── ...                              #   其他可选访问器实现
 │       ├── init/                                # 初始化流程
 │       │   ├── auto_init.hpp                    #   六阶段自动初始化入口
 │       │   ├── init_cancel.hpp                  #   AutoInit 取消回调
