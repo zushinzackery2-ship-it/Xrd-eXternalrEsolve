@@ -12,6 +12,12 @@ namespace xrd
 namespace resolve
 {
 
+struct ObjectSample
+{
+    i32 slotIndex = -1;
+    uptr object = 0;
+};
+
 // 从 GObjects 中按索引读取一个 UObject 指针
 inline uptr ReadObjectAt(const IMemoryAccessor& mem, const UEOffsets& off, i32 index)
 {
@@ -85,13 +91,13 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
     std::cerr << "[xrd] 对象总数: " << totalObjects << "\n";
 
     // 采样前 500 个有效对象
-    std::vector<uptr> samples;
+    std::vector<ObjectSample> samples;
     for (i32 i = 0; i < std::min(totalObjects, 500); ++i)
     {
         uptr obj = ReadObjectAt(mem, off, i);
         if (IsCanonicalUserPtr(obj))
         {
-            samples.push_back(obj);
+            samples.push_back({ i, obj });
         }
     }
 
@@ -111,10 +117,10 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
         for (i32 classOff : {0x10, 0x18, 0x08})
         {
             int validCount = 0;
-            for (auto obj : samples)
+            for (const auto& sample : samples)
             {
                 uptr classPtr = 0;
-                if (ReadPtr(mem, obj + classOff, classPtr) && IsCanonicalUserPtr(classPtr))
+                if (ReadPtr(mem, sample.object + classOff, classPtr) && IsCanonicalUserPtr(classPtr))
                 {
                     validCount++;
                 }
@@ -148,7 +154,8 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
         for (i32 i = 0; i < std::min((i32)samples.size(), 100); ++i)
         {
             i32 readIdx = 0;
-            if (ReadValue(mem, samples[i] + idxOff, readIdx) && readIdx == i)
+            if (ReadValue(mem, samples[i].object + idxOff, readIdx)
+                && readIdx == samples[i].slotIndex)
             {
                 matchCount++;
             }
@@ -173,10 +180,10 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
         }
 
         int validCount = 0;
-        for (auto obj : samples)
+        for (const auto& sample : samples)
         {
             i32 flags = 0;
-            ReadValue(mem, obj + flagOff, flags);
+            ReadValue(mem, sample.object + flagOff, flags);
             // 常见标志位在低 16 位
             if (flags != 0 && (flags & 0xFFFF0000) == 0)
             {
@@ -203,7 +210,7 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
         for (i32 i = 0; i < std::min((i32)samples.size(), 50); ++i)
         {
             i32 compIdx = 0;
-            if (ReadValue(mem, samples[i] + nameOff, compIdx))
+            if (ReadValue(mem, samples[i].object + nameOff, compIdx))
             {
                 if (compIdx > 0 && compIdx < 2000000)
                 {
@@ -231,10 +238,10 @@ inline bool DiscoverUObjectOffsets(const IMemoryAccessor& mem, UEOffsets& off)
         }
 
         int validOrNull = 0;
-        for (auto obj : samples)
+        for (const auto& sample : samples)
         {
             uptr outer = 0;
-            if (ReadPtr(mem, obj + outerOff, outer))
+            if (ReadPtr(mem, sample.object + outerOff, outer))
             {
                 if (outer == 0 || IsCanonicalUserPtr(outer))
                 {

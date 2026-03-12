@@ -68,6 +68,36 @@ inline bool FindPatternInCachedSection(
     return false;
 }
 
+inline uptr ResolveInitialVTableJump(
+    const SectionCache& textSec,
+    uptr functionVa)
+{
+    if (functionVa < textSec.va || functionVa >= textSec.va + textSec.size)
+    {
+        return functionVa;
+    }
+
+    u32 offset = static_cast<u32>(functionVa - textSec.va);
+    if (offset + 5 > textSec.size)
+    {
+        return functionVa;
+    }
+
+    if (textSec.data[offset] != 0xE9)
+    {
+        return functionVa;
+    }
+
+    i32 disp = *reinterpret_cast<const i32*>(&textSec.data[offset + 1]);
+    uptr resolved = functionVa + 5 + disp;
+    if (resolved >= textSec.va && resolved < textSec.va + textSec.size)
+    {
+        return resolved;
+    }
+
+    return functionVa;
+}
+
 // 通过 VTable 扫描定位 ProcessEvent
 // 策略：读取第一个 UObject 的 VTable，遍历虚函数指针
 // 对每个函数检查是否包含 FunctionFlags 偏移的特征码
@@ -136,6 +166,8 @@ inline bool ScanProcessEvent(
         {
             continue;
         }
+
+        funcAddr = ResolveInitialVTableJump(*textSec, funcAddr);
 
         // 在函数体内搜索两个特征码
         bool found1 = FindPatternInCachedSection(

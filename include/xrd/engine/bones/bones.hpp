@@ -1,17 +1,18 @@
 #pragma once
 // Xrd-eXternalrEsolve - 骨骼系统
-// 骨骼网格体读取，支持双缓冲机制（继承 UnrealResolve 算法）
+// 骨骼网格体读取，ComponentSpaceTransforms 只在 USkinnedMeshComponent
+// 自身成员范围内按双 TArray 特征发现，避免被子类私有数组带偏。
 
 #include "../../core/context.hpp"
 #include "../../resolve/runtime/scan_bones.hpp"
 #include "../world/world.hpp"
+#include "bones_offsets.hpp"
 #include <vector>
 #include <cmath>
 #include <cstring>
 
 namespace xrd
 {
-
 // 读取 USceneComponent 的 ComponentToWorld 变换
 inline bool ReadComponentToWorld(uptr component, FTransform& out)
 {
@@ -25,12 +26,31 @@ inline bool ReadComponentToWorld(uptr component, FTransform& out)
     // 首次访问时自动扫描偏移
     if (off.ComponentToWorld_Offset == -1 && off.kAutoScanUSceneComponentComponentToWorld)
     {
-        i32 detected = resolve::ScanComponentToWorldOffset(Mem(), component, off.bUseDoublePrecision);
-        if (detected != -1)
+        std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
+        if (off.ComponentToWorld_Offset == -1)
         {
-            off.ComponentToWorld_Offset = detected;
-            std::cerr << "[xrd] ComponentToWorld 偏移: 0x"
-                      << std::hex << detected << std::dec << "\n";
+            i32 detected = -1;
+            uptr cls = GetObjectClass(component);
+            if (cls)
+            {
+                detected = GetPropertyOffsetByName(cls, "ComponentToWorld");
+            }
+
+            if (detected == -1)
+            {
+                detected = resolve::ScanComponentToWorldOffset(
+                    Mem(),
+                    component,
+                    off.bUseDoublePrecision
+                );
+            }
+
+            if (detected != -1)
+            {
+                off.ComponentToWorld_Offset = detected;
+                std::cerr << "[xrd] ComponentToWorld 偏移: 0x"
+                          << std::hex << detected << std::dec << "\n";
+            }
         }
     }
 
@@ -67,7 +87,7 @@ inline bool ReadComponentToWorld(uptr component, FTransform& out)
     }
 }
 
-// 读取 SkeletalMeshComponent 的骨骼变换数组
+// 读取 SkeletalMeshComponent 的 CachedComponentSpaceTransforms
 inline bool ReadBoneTransforms(uptr meshComponent, std::vector<FTransform>& outBones)
 {
     outBones.clear();
@@ -77,35 +97,39 @@ inline bool ReadBoneTransforms(uptr meshComponent, std::vector<FTransform>& outB
     }
 
     auto& off = Ctx().off;
+    const detail::StructMemberRange allowedRange = detail::GetSkinnedMeshComponentMemberRange();
 
-    // 对标 UnrealResolve::ScanComponentSpaceTransformsArrayOffset
-    // 搜索两个相邻的 TArray<FTransform>：指针不同但 count/max 相同（双缓冲）
+    if (off.ComponentSpaceTransforms_Offset != -1
+        && allowedRange.IsValid()
+        && !detail::IsOffsetInRange(off.ComponentSpaceTransforms_Offset, allowedRange))
+    {
+        std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
+        if (off.ComponentSpaceTransforms_Offset != -1
+            && !detail::IsOffsetInRange(off.ComponentSpaceTransforms_Offset, allowedRange))
+        {
+            std::cerr << "[xrd] ComponentSpaceTransforms 当前偏移越界: 0x"
+                      << std::hex << off.ComponentSpaceTransforms_Offset
+                      << " 不在 [0x" << allowedRange.begin
+                      << ", 0x" << allowedRange.end << ")" << std::dec << "\n";
+            off.ComponentSpaceTransforms_Offset = -1;
+        }
+    }
+
     if (off.ComponentSpaceTransforms_Offset == -1)
     {
-        constexpr u32 searchSize = 0x1000;
-        std::vector<u8> buf(searchSize);
-        if (Mem().Read(meshComponent, buf.data(), searchSize))
+        std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
+        if (off.ComponentSpaceTransforms_Offset == -1)
         {
-            for (u32 offset = 0; offset + 32 <= searchSize; offset += 8)
+            i32 detected = detail::DiscoverComponentSpaceTransformsOffset(
+                meshComponent,
+                off.bUseDoublePrecision
+            );
+
+            if (detected != -1)
             {
-                u64 ptr1   = *reinterpret_cast<u64*>(&buf[offset]);
-                i32 count1 = *reinterpret_cast<i32*>(&buf[offset + 8]);
-                i32 max1   = *reinterpret_cast<i32*>(&buf[offset + 12]);
-
-                u64 ptr2   = *reinterpret_cast<u64*>(&buf[offset + 16]);
-                i32 count2 = *reinterpret_cast<i32*>(&buf[offset + 24]);
-                i32 max2   = *reinterpret_cast<i32*>(&buf[offset + 28]);
-
-                if (ptr1 != 0 && ptr2 != 0 && ptr1 != ptr2 &&
-                    count1 == count2 && max1 == max2 &&
-                    count1 > 0 && count1 < 1000 && max1 > 0 && max1 < 1000)
-                {
-                    off.ComponentSpaceTransforms_Offset = static_cast<i32>(offset);
-                    std::cerr << "[xrd] ComponentSpaceTransforms 偏移: 0x"
-                              << std::hex << offset << std::dec
-                              << " (bones=" << count1 << ")\n";
-                    break;
-                }
+                off.ComponentSpaceTransforms_Offset = detected;
+                std::cerr << "[xrd] ComponentSpaceTransforms 偏移: 0x"
+                          << std::hex << detected << std::dec << "\n";
             }
         }
     }
@@ -115,65 +139,68 @@ inline bool ReadBoneTransforms(uptr meshComponent, std::vector<FTransform>& outB
         return false;
     }
 
-    // 选择有效的双缓冲索引
-    int validBuf = resolve::GetValidBoneArrayIndex(
-        Mem(), meshComponent,
-        off.ComponentSpaceTransforms_Offset
-    );
-
-    i32 arrayOffset = off.ComponentSpaceTransforms_Offset + validBuf * 0x10;
-
-    uptr arrData = 0;
-    i32 arrCount = 0;
-    if (!GReadPtr(meshComponent + arrayOffset, arrData))
+    auto tryReadAtOffset = [&](i32 arrayOffset) -> bool
     {
-        return false;
-    }
-    if (!IsCanonicalUserPtr(arrData))
-    {
-        return false;
-    }
-    GReadI32(meshComponent + arrayOffset + 8, arrCount);
-    if (arrCount <= 0 || arrCount > 500)
-    {
-        return false;
-    }
-
-    i32 transformSize = off.bUseDoublePrecision ? 0x60 : 0x30;
-
-    if (off.bUseDoublePrecision)
-    {
-        outBones.resize(arrCount);
-        std::vector<u8> rawData(arrCount * transformSize);
-        if (!Mem().Read(arrData, rawData.data(), rawData.size()))
+        uptr arrData = 0;
+        i32 arrCount = 0;
+        i32 arrMax = 0;
+        if (!detail::ReadTransformArrayMeta(
+                Mem(),
+                meshComponent,
+                arrayOffset,
+                arrData,
+                arrCount,
+                arrMax))
         {
             return false;
         }
-        for (i32 i = 0; i < arrCount; ++i)
+
+        i32 transformSize = off.bUseDoublePrecision ? 0x60 : 0x30;
+
+        if (off.bUseDoublePrecision)
         {
-            std::memcpy(&outBones[i], rawData.data() + i * transformSize, transformSize);
+            outBones.resize(arrCount);
+            std::vector<u8> rawData(arrCount * transformSize);
+            if (!Mem().Read(arrData, rawData.data(), rawData.size()))
+            {
+                return false;
+            }
+            for (i32 i = 0; i < arrCount; ++i)
+            {
+                std::memcpy(&outBones[i], rawData.data() + i * transformSize, transformSize);
+            }
         }
-    }
-    else
+        else
+        {
+            struct FTransformF
+            {
+                float data[12];
+            };
+
+            std::vector<FTransformF> rawBones(arrCount);
+            if (!Mem().Read(arrData, rawBones.data(), arrCount * sizeof(FTransformF)))
+            {
+                return false;
+            }
+            outBones.resize(arrCount);
+            for (i32 i = 0; i < arrCount; ++i)
+            {
+                auto& r = rawBones[i];
+                outBones[i].Rotation = { r.data[0], r.data[1], r.data[2], r.data[3] };
+                outBones[i].Translation = { r.data[4], r.data[5], r.data[6] };
+                outBones[i].Scale3D = { r.data[8], r.data[9], r.data[10] };
+            }
+        }
+
+        return true;
+    };
+
+    if (tryReadAtOffset(off.ComponentSpaceTransforms_Offset))
     {
-        // float 精度批量读取后逐个转换
-        struct FTransformF { float data[12]; };
-        std::vector<FTransformF> rawBones(arrCount);
-        if (!Mem().Read(arrData, rawBones.data(), arrCount * sizeof(FTransformF)))
-        {
-            return false;
-        }
-        outBones.resize(arrCount);
-        for (i32 i = 0; i < arrCount; ++i)
-        {
-            auto& r = rawBones[i];
-            outBones[i].Rotation    = { r.data[0], r.data[1], r.data[2], r.data[3] };
-            outBones[i].Translation = { r.data[4], r.data[5], r.data[6] };
-            outBones[i].Scale3D     = { r.data[8], r.data[9], r.data[10] };
-        }
+        return true;
     }
 
-    return true;
+    return false;
 }
 
 // 将骨骼从组件空间变换到世界空间

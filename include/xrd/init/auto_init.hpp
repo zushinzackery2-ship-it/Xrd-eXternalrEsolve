@@ -21,6 +21,7 @@
 #include "../engine/objects/objects.hpp"
 #include "../engine/objects/objects_search.hpp"
 #include "init_helpers.hpp"
+#include "init_cancel.hpp"
 #include "init_common.hpp"
 #include <iostream>
 
@@ -31,6 +32,7 @@ namespace xrd
 
 inline bool AutoInit(const wchar_t* processName = nullptr)
 {
+    constexpr char kModeTag[] = "AutoInit";
     ResetContext();
     auto& ctx = Ctx();
 
@@ -69,6 +71,11 @@ inline bool AutoInit(const wchar_t* processName = nullptr)
     // Phase 2+: 公共扫描与偏移发现（重试直到关键值全部有效）
     for (int attempt = 1; ; ++attempt)
     {
+        if (detail::AbortAutoInitIfRequested(kModeTag))
+        {
+            return false;
+        }
+
         if (attempt > 1)
         {
             detail::ResetOffsetsForRetry();
@@ -78,7 +85,10 @@ inline bool AutoInit(const wchar_t* processName = nullptr)
         if (!detail::DoCommonScanAndDiscover())
         {
             std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
-            Sleep(300);
+            if (!detail::SleepForAutoInitRetry(300, kModeTag))
+            {
+                return false;
+            }
             continue;
         }
 
@@ -88,7 +98,10 @@ inline bool AutoInit(const wchar_t* processName = nullptr)
         }
 
         std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
-        Sleep(300);
+        if (!detail::SleepForAutoInitRetry(300, kModeTag))
+        {
+            return false;
+        }
     }
 
     detail::PrintInitSummary();
@@ -100,6 +113,7 @@ inline bool AutoInit(const wchar_t* processName = nullptr)
 
 inline bool AutoInitDriver(const wchar_t* processName = nullptr)
 {
+    constexpr char kModeTag[] = "AutoInit (Driver)";
     ResetContext();
     auto& ctx = Ctx();
 
@@ -145,6 +159,11 @@ inline bool AutoInitDriver(const wchar_t* processName = nullptr)
 
     for (int attempt = 1; ; ++attempt)
     {
+        if (detail::AbortAutoInitIfRequested(kModeTag))
+        {
+            return false;
+        }
+
         if (attempt > 1)
         {
             detail::ResetOffsetsForRetry();
@@ -154,7 +173,10 @@ inline bool AutoInitDriver(const wchar_t* processName = nullptr)
         if (!detail::DoCommonScanAndDiscover())
         {
             std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
-            Sleep(300);
+            if (!detail::SleepForAutoInitRetry(300, kModeTag))
+            {
+                return false;
+            }
             continue;
         }
 
@@ -164,7 +186,10 @@ inline bool AutoInitDriver(const wchar_t* processName = nullptr)
         }
 
         std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
-        Sleep(300);
+        if (!detail::SleepForAutoInitRetry(300, kModeTag))
+        {
+            return false;
+        }
     }
 
     detail::PrintInitSummary();
@@ -176,6 +201,7 @@ inline bool AutoInitDriver(const wchar_t* processName = nullptr)
 
 inline bool AutoInitSharedMem(const wchar_t* processName = nullptr)
 {
+    constexpr char kModeTag[] = "AutoInit (SharedMem)";
     ResetContext();
     auto& ctx = Ctx();
 
@@ -220,6 +246,11 @@ inline bool AutoInitSharedMem(const wchar_t* processName = nullptr)
 
     for (int attempt = 1; ; ++attempt)
     {
+        if (detail::AbortAutoInitIfRequested(kModeTag))
+        {
+            return false;
+        }
+
         if (attempt > 1)
         {
             detail::ResetOffsetsForRetry();
@@ -229,7 +260,10 @@ inline bool AutoInitSharedMem(const wchar_t* processName = nullptr)
         if (!detail::DoCommonScanAndDiscover())
         {
             std::cerr << "[xrd] 扫描失败，300ms 后重试\n";
-            Sleep(300);
+            if (!detail::SleepForAutoInitRetry(300, kModeTag))
+            {
+                return false;
+            }
             continue;
         }
 
@@ -239,7 +273,10 @@ inline bool AutoInitSharedMem(const wchar_t* processName = nullptr)
         }
 
         std::cerr << "[xrd] 关键值不完整，300ms 后重试\n";
-        Sleep(300);
+        if (!detail::SleepForAutoInitRetry(300, kModeTag))
+        {
+            return false;
+        }
     }
 
     detail::PrintInitSummary();

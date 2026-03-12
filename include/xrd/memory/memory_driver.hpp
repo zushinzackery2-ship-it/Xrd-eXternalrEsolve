@@ -1,6 +1,6 @@
 #pragma once
 // Xrd-eXternalrEsolve - ReiVM 驱动内存访问器
-// 通过 IOCTL 读写目标进程内存，支持单次读和批量读
+// 通过 IOCTL 读写目标进程内存
 
 #include "memory.hpp"
 #include <winioctl.h>
@@ -13,12 +13,32 @@ namespace ReiVMProtocol
 {
     inline constexpr wchar_t kDeviceSymbolicName[] = L"\\\\.\\ReiVMDrv";
 
+    inline constexpr u32 kReadFlag = 0xACE;
+
     inline constexpr DWORD IOCTL_READ =
         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
     inline constexpr DWORD IOCTL_GET_MAINMODULE =
         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x806, METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
     inline constexpr DWORD IOCTL_READ_BATCH =
         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x808, METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
+    inline constexpr DWORD IOCTL_READ_EX =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x809, METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
+    inline constexpr DWORD IOCTL_READ_BATCH_EX =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x80A, METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
+    inline constexpr DWORD IOCTL_REFRESH_STATE =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x832, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    inline constexpr DWORD IOCTL_TERMINATE_PROCESS =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x833, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+    inline constexpr u32 READ_METHOD_CR3 = 0x00;
+    inline constexpr u32 READ_METHOD_MMCPY = 0x01;
+
+    inline constexpr u32 REIVM_REFRESH_FLAG_CLEANUP_ALL_SLOTS = 0x00000001;
+    inline constexpr u32 REIVM_REFRESH_FLAG_WAIT_FOR_DEFERRED = 0x00000002;
+    inline constexpr u32 REIVM_REFRESH_FLAG_CLEAR_PROTECTION = 0x00000004;
+
+    inline constexpr u32 REIVM_TERMINATE_FLAG_UNPROTECT_FIRST = 0x00000001;
+    inline constexpr u32 REIVM_TERMINATE_FLAG_CLEANUP_OWNER_SLOTS = 0x00000002;
 
 #pragma pack(push, 8)
     struct DriverHeader
@@ -28,6 +48,17 @@ namespace ReiVMProtocol
         u64 address;
         u64 buffer;
         u32 size;
+    };
+
+    struct DriverReadEx
+    {
+        u32 flag;
+        u32 pid;
+        u64 address;
+        u64 buffer;
+        u32 size;
+        u32 method;
+        u32 reserved;
     };
 
     struct IoctlReadDesc
@@ -45,6 +76,39 @@ namespace ReiVMProtocol
         u32 reserved1;
         IoctlReadDesc descriptors[1];
     };
+
+    struct IoctlReadBatchEx
+    {
+        u32 pid;
+        u32 count;
+        u32 method;
+        u32 reserved;
+        IoctlReadDesc descriptors[1];
+    };
+
+    struct RefreshStateRequest
+    {
+        u32 flags;
+        u32 reserved0;
+        u32 reserved1;
+        u32 reserved2;
+    };
+
+    struct RefreshStateResult
+    {
+        u32 cleanedSlots;
+        u32 liveSlots;
+        u32 pendingSlots;
+        u32 flagsApplied;
+    };
+
+    struct TerminateProcessRequest
+    {
+        u32 pid;
+        LONG exitStatus;
+        u32 flags;
+        u32 reserved;
+    };
 #pragma pack(pop)
 } // namespace ReiVMProtocol
 
@@ -57,16 +121,14 @@ public:
     // 打开驱动设备并绑定 PID
     bool Open(u32 pid)
     {
-        m_pid = pid;
-        m_hDriver = CreateFileW(
-            ReiVMProtocol::kDeviceSymbolicName,
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            nullptr);
+        if (m_hDriver != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(m_hDriver);
+            m_hDriver = INVALID_HANDLE_VALUE;
+        }
 
+        m_pid = pid;
+        m_hDriver = OpenDriverHandle();
         return m_hDriver != INVALID_HANDLE_VALUE;
     }
 
@@ -86,14 +148,18 @@ public:
         BOOL ok = DeviceIoControl(
             m_hDriver,
             ReiVMProtocol::IOCTL_GET_MAINMODULE,
-            &input, sizeof(input),
-            &moduleBase, sizeof(moduleBase),
-            &bytesReturned, nullptr);
+            &input,
+            sizeof(input),
+            &moduleBase,
+            sizeof(moduleBase),
+            &bytesReturned,
+            nullptr);
 
         if (!ok)
         {
             return 0;
         }
+
         return moduleBase;
     }
 
@@ -113,9 +179,12 @@ public:
         BOOL ok = DeviceIoControl(
             m_hDriver,
             ReiVMProtocol::IOCTL_READ,
-            &header, sizeof(header),
-            buffer, static_cast<DWORD>(size),
-            &bytesReturned, nullptr);
+            &header,
+            sizeof(header),
+            buffer,
+            static_cast<DWORD>(size),
+            &bytesReturned,
+            nullptr);
 
         return ok != 0 && bytesReturned == static_cast<DWORD>(size);
     }
@@ -148,7 +217,6 @@ public:
             return false;
         }
 
-        // 构建 IOCTL 输入
         std::size_t batchInSize = sizeof(ReiVMProtocol::IoctlReadBatch)
             + (static_cast<std::size_t>(count) - 1u) * sizeof(ReiVMProtocol::IoctlReadDesc);
         std::vector<u8> batchInBuf(batchInSize);
@@ -165,27 +233,28 @@ public:
             batch->descriptors[i].reserved = 0;
         }
 
-        // IOCTL 输出缓冲区
         std::vector<u8> outBuf(totalOutSize);
 
         DWORD bytesReturned = 0;
         BOOL ok = DeviceIoControl(
             m_hDriver,
             ReiVMProtocol::IOCTL_READ_BATCH,
-            batch, static_cast<DWORD>(batchInSize),
-            outBuf.data(), totalOutSize,
-            &bytesReturned, nullptr);
+            batch,
+            static_cast<DWORD>(batchInSize),
+            outBuf.data(),
+            totalOutSize,
+            &bytesReturned,
+            nullptr);
 
         if (!ok || bytesReturned != totalOutSize)
         {
             return false;
         }
 
-        // 将结果拷贝到各描述符的 buffer 中
         u32 offset = 0;
         for (u32 i = 0; i < count; ++i)
         {
-            if (descs[i].buffer && descs[i].size > 0)
+            if (descs[i].buffer != nullptr && descs[i].size > 0)
             {
                 std::memcpy(descs[i].buffer, outBuf.data() + offset, descs[i].size);
             }
@@ -195,8 +264,92 @@ public:
         return true;
     }
 
-    HANDLE GetDriverHandle() const { return m_hDriver; }
-    u32 GetPid() const { return m_pid; }
+    static bool RefreshDriverState(
+        u32 flags = ReiVMProtocol::REIVM_REFRESH_FLAG_CLEAR_PROTECTION,
+        ReiVMProtocol::RefreshStateResult* result = nullptr)
+    {
+        HANDLE driverHandle = OpenDriverHandle();
+        if (driverHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        ReiVMProtocol::RefreshStateRequest request{};
+        request.flags = flags;
+
+        ReiVMProtocol::RefreshStateResult localResult{};
+        DWORD bytesReturned = 0;
+        BOOL ok = DeviceIoControl(
+            driverHandle,
+            ReiVMProtocol::IOCTL_REFRESH_STATE,
+            &request,
+            sizeof(request),
+            &localResult,
+            sizeof(localResult),
+            &bytesReturned,
+            nullptr);
+
+        CloseHandle(driverHandle);
+
+        if (!ok || bytesReturned < sizeof(localResult))
+        {
+            return false;
+        }
+
+        if (result != nullptr)
+        {
+            *result = localResult;
+        }
+
+        return true;
+    }
+
+    static bool TerminateProcessByPid(
+        u32 pid,
+        LONG exitStatus = 0,
+        u32 flags = ReiVMProtocol::REIVM_TERMINATE_FLAG_UNPROTECT_FIRST
+            | ReiVMProtocol::REIVM_TERMINATE_FLAG_CLEANUP_OWNER_SLOTS)
+    {
+        if (pid == 0)
+        {
+            return false;
+        }
+
+        HANDLE driverHandle = OpenDriverHandle();
+        if (driverHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        ReiVMProtocol::TerminateProcessRequest request{};
+        request.pid = pid;
+        request.exitStatus = exitStatus;
+        request.flags = flags;
+
+        DWORD bytesReturned = 0;
+        BOOL ok = DeviceIoControl(
+            driverHandle,
+            ReiVMProtocol::IOCTL_TERMINATE_PROCESS,
+            &request,
+            sizeof(request),
+            nullptr,
+            0,
+            &bytesReturned,
+            nullptr);
+
+        CloseHandle(driverHandle);
+        return ok != FALSE;
+    }
+
+    HANDLE GetDriverHandle() const
+    {
+        return m_hDriver;
+    }
+
+    u32 GetPid() const
+    {
+        return m_pid;
+    }
 
     ~DriverMemoryAccessor()
     {
@@ -213,7 +366,8 @@ public:
 
     // 允许移动
     DriverMemoryAccessor(DriverMemoryAccessor&& other) noexcept
-        : m_hDriver(other.m_hDriver), m_pid(other.m_pid)
+        : m_hDriver(other.m_hDriver)
+        , m_pid(other.m_pid)
     {
         other.m_hDriver = INVALID_HANDLE_VALUE;
         other.m_pid = 0;
@@ -227,15 +381,30 @@ public:
             {
                 CloseHandle(m_hDriver);
             }
+
             m_hDriver = other.m_hDriver;
             m_pid = other.m_pid;
+
             other.m_hDriver = INVALID_HANDLE_VALUE;
             other.m_pid = 0;
         }
+
         return *this;
     }
 
 private:
+    static HANDLE OpenDriverHandle()
+    {
+        return CreateFileW(
+            ReiVMProtocol::kDeviceSymbolicName,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+    }
+
     HANDLE m_hDriver = INVALID_HANDLE_VALUE;
     u32 m_pid = 0;
 };

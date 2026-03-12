@@ -4,7 +4,9 @@
 // 参考 Rei-Dumper: OffsetFinder::FindFunctionFlagsOffset / FindFunctionNativeFuncOffset
 
 #include "../../core/context.hpp"
+#include "../../core/process_sections.hpp"
 #include "../../engine/names.hpp"
+#include "../../helpers/dump/dump_function_flags.hpp"
 #include "scan_offsets.hpp"
 #include <iostream>
 #include <algorithm>
@@ -13,6 +15,148 @@ namespace xrd
 {
 namespace resolve
 {
+
+inline uptr FindFunctionObjectByShortNameForResolve(
+    const IMemoryAccessor& mem,
+    const UEOffsets& off,
+    const std::string& functionName)
+{
+    i32 total = GetObjectCount(mem, off);
+    for (i32 i = 0; i < total; ++i)
+    {
+        uptr obj = ReadObjectAt(mem, off, i);
+        if (!IsCanonicalUserPtr(obj))
+        {
+            continue;
+        }
+
+        uptr cls = 0;
+        if (!ReadPtr(mem, obj + off.UObject_Class, cls) || !IsCanonicalUserPtr(cls))
+        {
+            continue;
+        }
+
+        FName clsFn{};
+        if (!ReadValue(mem, cls + off.UObject_Name, clsFn))
+        {
+            continue;
+        }
+
+        std::string className = ResolveNameDirect(mem, off, clsFn.ComparisonIndex, clsFn.Number);
+        if (className != "Function")
+        {
+            continue;
+        }
+
+        FName fn{};
+        if (!ReadValue(mem, obj + off.UObject_Name, fn))
+        {
+            continue;
+        }
+
+        std::string name = ResolveNameDirect(mem, off, fn.ComparisonIndex, fn.Number);
+        if (name == functionName)
+        {
+            return obj;
+        }
+    }
+
+    return 0;
+}
+
+inline i32 FindExactU32Offset(
+    const IMemoryAccessor& mem,
+    const std::vector<std::pair<uptr, u32>>& infos,
+    i32 searchStart,
+    i32 searchEnd)
+{
+    for (i32 testOff = searchStart; testOff <= searchEnd; testOff += 4)
+    {
+        bool matched = true;
+        for (const auto& info : infos)
+        {
+            u32 value = 0;
+            if (!ReadValue(mem, info.first + testOff, value) || value != info.second)
+            {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched)
+        {
+            return testOff;
+        }
+    }
+
+    return -1;
+}
+
+inline bool DiscoverFunctionFlagsOffsetExact(
+    const IMemoryAccessor& mem,
+    UEOffsets& off)
+{
+    using detail::EFuncFlags::BlueprintCallable;
+    using detail::EFuncFlags::BlueprintPure;
+    using detail::EFuncFlags::Const;
+    using detail::EFuncFlags::Exec;
+    using detail::EFuncFlags::Final;
+    using detail::EFuncFlags::Native;
+    using detail::EFuncFlags::Public;
+    using detail::EFuncFlags::RequiredAPI;
+
+    uptr wasInputKeyJustPressed = FindFunctionObjectByShortNameForResolve(
+        mem, off, "WasInputKeyJustPressed");
+    uptr toggleSpeaking = FindFunctionObjectByShortNameForResolve(
+        mem, off, "ToggleSpeaking");
+    uptr switchLevelOrFov = FindFunctionObjectByShortNameForResolve(
+        mem, off, "SwitchLevel");
+    if (!switchLevelOrFov)
+    {
+        switchLevelOrFov = FindFunctionObjectByShortNameForResolve(mem, off, "FOV");
+    }
+
+    if (!wasInputKeyJustPressed || !toggleSpeaking || !switchLevelOrFov)
+    {
+        return false;
+    }
+
+    std::vector<std::pair<uptr, u32>> infos = {
+        { wasInputKeyJustPressed, Final | Native | Public | BlueprintCallable | BlueprintPure | Const },
+        { toggleSpeaking, Exec | Native | Public },
+        { switchLevelOrFov, Exec | Native | Public },
+    };
+
+    i32 searchStart = std::max(off.UStruct_Size + 4, 0x30);
+    i32 searchEnd = 0x140;
+
+    i32 found = FindExactU32Offset(mem, infos, searchStart, searchEnd);
+    if (found != -1)
+    {
+        off.UFunction_FunctionFlags = found;
+        std::cerr << "[xrd] UFunction::FunctionFlags +0x"
+                  << std::hex << found << std::dec
+                  << " (exact)\n";
+        return true;
+    }
+
+    for (auto& info : infos)
+    {
+        info.second |= RequiredAPI;
+    }
+
+    found = FindExactU32Offset(mem, infos, searchStart, searchEnd);
+    if (found != -1)
+    {
+        off.UFunction_FunctionFlags = found;
+        std::cerr << "[xrd] UFunction::FunctionFlags +0x"
+                  << std::hex << found << std::dec
+                  << " (exact|requiredapi)\n";
+        return true;
+    }
+
+    return false;
+}
 
 // 发现 UFunction::FunctionFlags 偏移
 // 策略：找到 UFunction 对象，FunctionFlags 是一个 u32，
@@ -24,6 +168,11 @@ inline bool DiscoverFunctionFlagsOffset(
     if (off.UStruct_Size == -1)
     {
         return false;
+    }
+
+    if (DiscoverFunctionFlagsOffsetExact(mem, off))
+    {
+        return true;
     }
 
     i32 total = GetObjectCount(mem, off);
@@ -119,7 +268,8 @@ inline bool DiscoverFunctionFlagsOffset(
     {
         off.UFunction_FunctionFlags = bestOff;
         std::cerr << "[xrd] UFunction::FunctionFlags +0x"
-                  << std::hex << bestOff << std::dec << "\n";
+                  << std::hex << bestOff << std::dec
+                  << " (heuristic)\n";
     }
 
     return off.UFunction_FunctionFlags != -1;
@@ -134,6 +284,63 @@ inline bool DiscoverExecFunctionOffset(
     if (off.UFunction_FunctionFlags == -1)
     {
         return false;
+    }
+
+    uptr wasInputKeyJustPressed = FindFunctionObjectByShortNameForResolve(
+        mem, off, "WasInputKeyJustPressed");
+    uptr toggleSpeaking = FindFunctionObjectByShortNameForResolve(
+        mem, off, "ToggleSpeaking");
+    uptr switchLevelOrFov = FindFunctionObjectByShortNameForResolve(
+        mem, off, "SwitchLevel");
+    if (!switchLevelOrFov)
+    {
+        switchLevelOrFov = FindFunctionObjectByShortNameForResolve(mem, off, "FOV");
+    }
+
+    const SectionCache* textSec = FindSection(Ctx().sections, ".text");
+    auto IsLikelyExecPtr = [textSec](uptr ptr) -> bool
+    {
+        if (!IsCanonicalUserPtr(ptr))
+        {
+            return false;
+        }
+
+        if (textSec == nullptr)
+        {
+            return true;
+        }
+
+        return ptr >= textSec->va && ptr < textSec->va + textSec->size;
+    };
+
+    if (wasInputKeyJustPressed && toggleSpeaking && switchLevelOrFov)
+    {
+        for (i32 testOff = 0x30; testOff <= 0x140; testOff += static_cast<i32>(sizeof(uptr)))
+        {
+            uptr ptr0 = 0;
+            uptr ptr1 = 0;
+            uptr ptr2 = 0;
+
+            if (!ReadPtr(mem, wasInputKeyJustPressed + testOff, ptr0)
+                || !ReadPtr(mem, toggleSpeaking + testOff, ptr1)
+                || !ReadPtr(mem, switchLevelOrFov + testOff, ptr2))
+            {
+                continue;
+            }
+
+            if (!IsLikelyExecPtr(ptr0)
+                || !IsLikelyExecPtr(ptr1)
+                || !IsLikelyExecPtr(ptr2))
+            {
+                continue;
+            }
+
+            off.UFunction_ExecFunction = testOff;
+            std::cerr << "[xrd] UFunction::ExecFunction +0x"
+                      << std::hex << testOff << std::dec
+                      << " (exact/text)\n";
+            return true;
+        }
     }
 
     i32 total = GetObjectCount(mem, off);
@@ -197,7 +404,7 @@ inline bool DiscoverExecFunctionOffset(
         {
             uptr execPtr = 0;
             if (ReadPtr(mem, func + testOff, execPtr) &&
-                IsCanonicalUserPtr(execPtr))
+                IsLikelyExecPtr(execPtr))
             {
                 validCount++;
             }

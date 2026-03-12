@@ -33,7 +33,7 @@ inline bool ResolveName_NamePool(
     i32 compIdx,
     std::string& out)
 {
-    if (compIdx <= 0)
+    if (compIdx < 0)
     {
         out.clear();
         return false;
@@ -133,7 +133,7 @@ inline bool ResolveName_Array(
     i32 compIdx,
     std::string& out)
 {
-    if (compIdx <= 0)
+    if (compIdx < 0)
     {
         out.clear();
         return false;

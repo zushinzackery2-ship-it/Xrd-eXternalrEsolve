@@ -66,7 +66,7 @@ inline bool CacheSections(
         // 缓存段数据到本地
         // 大段（>64KB）分块读取并容忍部分失败，避免 .text 等大段因单块超时丢失
         sc.data.resize(sc.size, 0);
-        constexpr u32 kReadChunk = 1 * 1024 * 1024; // 1MB
+        constexpr u32 kReadChunk = 256 * 1024; // 256KB，降低单次分块读失败时整段丢失的概率
         if (sc.size <= 0x10000)
         {
             // 小段一次读完

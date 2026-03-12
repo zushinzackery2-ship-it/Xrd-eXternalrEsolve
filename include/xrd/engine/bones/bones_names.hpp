@@ -105,12 +105,16 @@ inline bool ReadBoneInfoArray(
     // 首次访问时自动扫描偏移
     if (off.RefSkeletonBoneInfo_Offset == -1)
     {
-        i32 detected = resolve::ScanRefSkeletonBoneInfoOffset(Mem(), skeletalMesh);
-        if (detected != -1)
+        std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
+        if (off.RefSkeletonBoneInfo_Offset == -1)
         {
-            off.RefSkeletonBoneInfo_Offset = detected;
-            std::cerr << "[xrd] RefSkeletonBoneInfo 偏移: 0x"
-                      << std::hex << detected << std::dec << "\n";
+            i32 detected = resolve::ScanRefSkeletonBoneInfoOffset(Mem(), skeletalMesh);
+            if (detected != -1)
+            {
+                off.RefSkeletonBoneInfo_Offset = detected;
+                std::cerr << "[xrd] RefSkeletonBoneInfo 偏移: 0x"
+                          << std::hex << detected << std::dec << "\n";
+            }
         }
     }
 

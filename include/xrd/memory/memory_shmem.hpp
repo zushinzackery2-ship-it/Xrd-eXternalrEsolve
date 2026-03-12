@@ -6,6 +6,7 @@
 #include "memory.hpp"
 #include "memory_driver.hpp"  // ReiVMProtocol 定义复用
 #include <intrin.h>
+#include <iostream>
 #include <mutex>
 
 namespace xrd
@@ -19,6 +20,7 @@ namespace ShmemCmd
     inline constexpr LONG Write = 2;
     inline constexpr LONG Mouse = 3;
     inline constexpr LONG MouseSetup = 4;
+    inline constexpr LONG ReadBatch = 5;
 }
 
 // 共享内存参数（与驱动 shared_mem.h 一致）
@@ -35,8 +37,8 @@ namespace ShmemConst
 // 读取方法（与驱动一致）
 namespace ReadMethod
 {
-    inline constexpr u32 CR3   = 0x00;
-    inline constexpr u32 MmCpy = 0x01;
+    inline constexpr u32 CR3 = ReiVMProtocol::READ_METHOD_CR3;
+    inline constexpr u32 MmCpy = ReiVMProtocol::READ_METHOD_MMCPY;
 }
 
 struct SharedMouseInputData
@@ -63,7 +65,18 @@ struct SharedMemHeader
     u32 method;                     // +0x20
     LONG status;                    // +0x24 (NTSTATUS)
     u32 bytesRead;                  // +0x28
-    u32 reserved[5];                // +0x2C 填充到 0x40
+    union
+    {
+        u32 reserved[5];            // +0x2C 兼容旧布局
+        struct
+        {
+            u32 auxCount;
+            u32 auxDescriptorBytes;
+            u32 auxTransferBytes;
+            u32 auxChunkIndex;
+            u32 auxFlags;
+        };
+    };
     SharedMouseInputData mouseData; // +0x40
     u64 mouseSetupSubRsp70Rva;      // +0x58
     u32 mouseSetupStubSize;         // +0x60
@@ -186,14 +199,20 @@ public:
 
     bool Write(uptr address, const void* buffer, std::size_t size) const override
     {
-        // 共享内存通道当前不支持写入
-        (void)address;
-        (void)buffer;
-        (void)size;
-        return false;
+        if (!m_header || !address || !buffer || size == 0)
+        {
+            return false;
+        }
+
+        if (size > ShmemConst::MaxData)
+        {
+            return WriteChunked(address, buffer, size);
+        }
+
+        return WriteSingle(address, buffer, static_cast<u32>(size));
     }
 
-    // 批量读：逐个走共享内存（每次零 IOCTL 开销）
+    // 批量读：优先合批走共享内存，超限时退化为分块批量或单次读。
     bool ReadBatch(ReadBatchDesc* descs, u32 count) const override
     {
         if (!m_header || !descs || count == 0)
@@ -202,17 +221,78 @@ public:
         }
 
         bool allOk = true;
-        for (u32 i = 0; i < count; ++i)
+        u32 begin = 0;
+
+        while (begin < count)
         {
-            auto& d = descs[i];
-            if (d.address && d.buffer && d.size > 0)
+            auto& first = descs[begin];
+            if (!first.address || !first.buffer || first.size == 0)
             {
-                if (!Read(d.address, d.buffer, d.size))
+                ++begin;
+                continue;
+            }
+
+            if (first.size > ShmemConst::MaxData)
+            {
+                if (!Read(first.address, first.buffer, first.size))
                 {
                     allOk = false;
                 }
+                ++begin;
+                continue;
             }
+
+            u32 chunkCount = 0;
+            std::size_t descriptorBytes = 0;
+            std::size_t transferBytes = 0;
+
+            while (begin + chunkCount < count)
+            {
+                const auto& desc = descs[begin + chunkCount];
+                std::size_t nextDescriptorBytes =
+                    (static_cast<std::size_t>(chunkCount) + 1u)
+                    * sizeof(ReiVMProtocol::IoctlReadDesc);
+                std::size_t nextTransferBytes = transferBytes;
+
+                if (desc.address && desc.buffer && desc.size > 0)
+                {
+                    if (desc.size > ShmemConst::MaxData)
+                    {
+                        break;
+                    }
+
+                    nextTransferBytes += desc.size;
+                }
+
+                if (nextDescriptorBytes > ShmemConst::MaxData
+                    || nextTransferBytes > ShmemConst::MaxData)
+                {
+                    break;
+                }
+
+                descriptorBytes = nextDescriptorBytes;
+                transferBytes = nextTransferBytes;
+                ++chunkCount;
+            }
+
+            if (chunkCount == 0)
+            {
+                if (!Read(first.address, first.buffer, first.size))
+                {
+                    allOk = false;
+                }
+                ++begin;
+                continue;
+            }
+
+            if (!ReadBatchSingle(descs + begin, chunkCount))
+            {
+                allOk = false;
+            }
+
+            begin += chunkCount;
         }
+
         return allOk;
     }
 
@@ -229,6 +309,7 @@ public:
 
         std::lock_guard<std::mutex> lock(m_mutex);
         m_header->command = ShmemCmd::Mouse;
+        ClearAuxFieldsLocked();
         m_header->status = 0;
         m_header->bytesRead = 0;
         m_header->mouseData = mouseData;
@@ -245,6 +326,7 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         std::memcpy(m_dataPtr, stubBytes, stubSize);
         m_header->command = ShmemCmd::MouseSetup;
+        ClearAuxFieldsLocked();
         m_header->status = 0;
         m_header->bytesRead = 0;
         m_header->mouseSetupSubRsp70Rva = subRsp70Rva;
@@ -271,6 +353,8 @@ public:
     SharedMemoryAccessor(SharedMemoryAccessor&& other) noexcept
         : m_hDriver(other.m_hDriver)
         , m_pid(other.m_pid)
+        , m_requestedSlot(other.m_requestedSlot)
+        , m_slotId(other.m_slotId)
         , m_header(other.m_header)
         , m_dataPtr(other.m_dataPtr)
         , m_requestEvent(other.m_requestEvent)
@@ -278,6 +362,8 @@ public:
     {
         other.m_hDriver = INVALID_HANDLE_VALUE;
         other.m_pid = 0;
+        other.m_requestedSlot = 0xFFFFFFFF;
+        other.m_slotId = 0;
         other.m_header = nullptr;
         other.m_dataPtr = nullptr;
         other.m_requestEvent = nullptr;
@@ -296,6 +382,8 @@ public:
 
             m_hDriver = other.m_hDriver;
             m_pid = other.m_pid;
+            m_requestedSlot = other.m_requestedSlot;
+            m_slotId = other.m_slotId;
             m_header = other.m_header;
             m_dataPtr = other.m_dataPtr;
             m_requestEvent = other.m_requestEvent;
@@ -303,6 +391,8 @@ public:
 
             other.m_hDriver = INVALID_HANDLE_VALUE;
             other.m_pid = 0;
+            other.m_requestedSlot = 0xFFFFFFFF;
+            other.m_slotId = 0;
             other.m_header = nullptr;
             other.m_dataPtr = nullptr;
             other.m_requestEvent = nullptr;
@@ -312,6 +402,15 @@ public:
     }
 
 private:
+    void ClearAuxFieldsLocked() const
+    {
+        m_header->auxCount = 0;
+        m_header->auxDescriptorBytes = 0;
+        m_header->auxTransferBytes = 0;
+        m_header->auxChunkIndex = 0;
+        m_header->auxFlags = 0;
+    }
+
     bool SubmitRequestLocked() const
     {
         _mm_sfence();  // 确保写入对驱动可见
@@ -359,14 +458,13 @@ private:
     bool ReadSingle(uptr address, void* buffer, u32 size) const
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-
-        // 填写请求
         m_header->command = ShmemCmd::Read;
-        m_header->pid     = m_pid;
+        m_header->pid = m_pid;
         m_header->address = static_cast<u64>(address);
-        m_header->size    = size;
-        m_header->method  = ReadMethod::CR3;
-        m_header->status  = 0;
+        m_header->size = size;
+        m_header->method = ReadMethod::CR3;
+        ClearAuxFieldsLocked();
+        m_header->status = 0;
         m_header->bytesRead = 0;
 
         if (!SubmitRequestLocked())
@@ -374,7 +472,6 @@ private:
             return false;
         }
 
-        // 拷贝结果
         if (m_header->status >= 0 && m_header->bytesRead > 0)
         {
             u32 toCopy = (m_header->bytesRead < size) ? m_header->bytesRead : size;
@@ -383,6 +480,27 @@ private:
         }
 
         return false;
+    }
+
+    bool WriteSingle(uptr address, const void* buffer, u32 size) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::memcpy(m_dataPtr, buffer, size);
+        m_header->command = ShmemCmd::Write;
+        m_header->pid = m_pid;
+        m_header->address = static_cast<u64>(address);
+        m_header->size = size;
+        m_header->method = ReadMethod::CR3;
+        ClearAuxFieldsLocked();
+        m_header->status = 0;
+        m_header->bytesRead = 0;
+
+        if (!SubmitRequestLocked())
+        {
+            return false;
+        }
+
+        return m_header->status >= 0 && m_header->bytesRead == size;
     }
 
     // 分块读取（超过 MaxData 时自动分块）
@@ -406,6 +524,95 @@ private:
             dst += chunk;
             currentAddr += chunk;
             remaining -= chunk;
+        }
+
+        return true;
+    }
+
+    bool WriteChunked(uptr address, const void* buffer, std::size_t totalSize) const
+    {
+        const u8* src = static_cast<const u8*>(buffer);
+        std::size_t remaining = totalSize;
+        uptr currentAddr = address;
+
+        while (remaining > 0)
+        {
+            u32 chunk = (remaining > ShmemConst::MaxData)
+                ? ShmemConst::MaxData
+                : static_cast<u32>(remaining);
+
+            if (!WriteSingle(currentAddr, src, chunk))
+            {
+                return false;
+            }
+
+            src += chunk;
+            currentAddr += chunk;
+            remaining -= chunk;
+        }
+
+        return true;
+    }
+
+    bool ReadBatchSingle(ReadBatchDesc* descs, u32 count) const
+    {
+        std::vector<ReiVMProtocol::IoctlReadDesc> descriptors(count);
+        std::size_t descriptorBytes = descriptors.size() * sizeof(descriptors[0]);
+        std::size_t transferBytes = 0;
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            descriptors[i].address = static_cast<u64>(descs[i].address);
+            descriptors[i].size = descs[i].size;
+            descriptors[i].reserved = 0;
+
+            if (descs[i].address && descs[i].buffer && descs[i].size > 0)
+            {
+                transferBytes += descs[i].size;
+            }
+        }
+
+        if (descriptorBytes > ShmemConst::MaxData || transferBytes > ShmemConst::MaxData)
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::memcpy(m_dataPtr, descriptors.data(), descriptorBytes);
+        m_header->command = ShmemCmd::ReadBatch;
+        m_header->pid = m_pid;
+        m_header->address = 0;
+        m_header->size = static_cast<u32>(transferBytes);
+        m_header->method = ReadMethod::CR3;
+        m_header->auxCount = count;
+        m_header->auxDescriptorBytes = static_cast<u32>(descriptorBytes);
+        m_header->auxTransferBytes = static_cast<u32>(transferBytes);
+        m_header->auxChunkIndex = 0;
+        m_header->auxFlags = 0;
+        m_header->status = 0;
+        m_header->bytesRead = 0;
+
+        if (!SubmitRequestLocked())
+        {
+            return false;
+        }
+
+        if (m_header->status < 0 || m_header->bytesRead != transferBytes)
+        {
+            return false;
+        }
+
+        std::size_t offset = 0;
+        for (u32 i = 0; i < count; ++i)
+        {
+            if (descs[i].address && descs[i].buffer && descs[i].size > 0)
+            {
+                std::memcpy(
+                    descs[i].buffer,
+                    m_dataPtr + offset,
+                    descs[i].size);
+                offset += descs[i].size;
+            }
         }
 
         return true;
@@ -448,6 +655,9 @@ private:
             return;
         }
 
+        std::cerr << "[xrd][Shmem] 开始销毁 slot=" << m_slotId
+                  << " pid=" << m_pid << "\n";
+
         // 通知驱动工作线程退出
         InterlockedExchange(&m_header->shutdown, 1);
         if (m_requestEvent)
@@ -459,18 +669,22 @@ private:
         if (m_hDriver != INVALID_HANDLE_VALUE)
         {
             DWORD bytesReturned = 0;
-            DeviceIoControl(
+            BOOL destroyOk = DeviceIoControl(
                 m_hDriver,
                 ShmemIoctl::Destroy,
                 &m_slotId, sizeof(m_slotId),
                 nullptr, 0,
                 &bytesReturned, nullptr);
+            std::cerr << "[xrd][Shmem] Destroy IOCTL 返回 slot=" << m_slotId
+                      << " ok=" << (destroyOk ? 1 : 0)
+                      << " err=" << (destroyOk ? 0 : GetLastError()) << "\n";
         }
 
         m_header = nullptr;
         m_dataPtr = nullptr;
         m_requestEvent = nullptr;
         m_responseEvent = nullptr;
+        std::cerr << "[xrd][Shmem] 销毁完成 slot=" << m_slotId << "\n";
     }
 
     HANDLE m_hDriver = INVALID_HANDLE_VALUE;

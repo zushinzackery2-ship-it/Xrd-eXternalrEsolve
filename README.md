@@ -44,12 +44,13 @@
 | **SDK 导出** | 生成与 Dumper-7 格式对齐的 CppSDK，含 `#pragma pack` / `alignas` / trailing padding |
 | **World 链式访问** | `UWorld → GameInstance → LocalPlayers[0] → PlayerController → Pawn` 全链路偏移一次性缓存 |
 | **FVector 精度自动检测** | 运行时区分 UE4 (float) / UE5 (double) |
-| **骨骼系统** | ComponentToWorld 自动扫描、双缓冲 ComponentSpaceTransforms、四元数合理性验证、按名称过滤式读取 |
+| **骨骼系统** | ComponentToWorld 自动扫描、双缓冲 ComponentSpaceTransforms、四元数合理性验证、按名称过滤式读取，并把骨骼数组扫描限制在 `USkinnedMeshComponent` 自身成员范围内 |
 | **W2S** | 内置 WorldToScreen 投影 |
 | **反射式字段访问** | `ReadActorFieldPtr/Int32/Float` 通过属性名自动查找偏移（带缓存），无需硬编码 |
 | **共享内存通道** | `SharedMemoryAccessor` 通过内核驱动共享内存实现零 IOCTL 读写，支持多 slot 并行（最多 4 通道） |
 | **共享内存鼠标** | 共享内存通道支持鼠标事件发送与鼠标 Hook 初始化，避免频繁单独 IOCTL |
 | **线程局部访问器** | `SetThreadMemAccessor()` 将当前线程绑定到独立通道，`Mem()` 自动返回线程局部覆盖，多线程零 mutex 争抢 |
+| **可取消初始化** | `SetAutoInitCancelCallback()` 支持在重试等待和扫描阶段中断 `AutoInit()`，取消时自动 `ResetContext()` |
 | **PhysX 碰撞读取** | 远程读取 PhysX 3.4 场景数据（Actor/Shape/Geometry），支持 Box/Sphere/Capsule/ConvexMesh 碰撞体 |
 | **Chaos 碰撞读取** | 远程读取 UE5 Chaos 物理场景（FPhysScene_Chaos），通过反射自动发现 BodyInstance/PhysicsProxy/AggGeom 偏移 |
 | **Embree 遮挡检测** | 基于 Embree 的 raycast 遮挡查询，支持碰撞体曲面细分与 BVH 加速 |
@@ -66,6 +67,7 @@
 |  | `Mem()` | 返回 `IMemoryAccessor` 引用 |
 |  | `Off()` | 返回偏移结构 `UEOffsets` |
 |  | `SetGObjects(rva)` / `SetGNames(rva)` / `SetGWorld(rva)` | 手动设置 RVA（AutoInit 前调用） |
+|  | `SetAutoInitCancelCallback(callback)` | 设置取消回调，在 AutoInit 重试与扫描流程中提前终止 |
 | **共享内存** | `SharedMemoryAccessor::Open(device, pid)` | 通过驱动共享内存初始化（自动分配 slot） |
 |  | `SharedMemoryAccessor::Open(device, pid, slotId)` | 指定 slot 初始化（多通道隔离） |
 |  | `SharedMemoryAccessor::SendMouseEvent(mouseData)` | 通过共享内存发送鼠标事件 |
@@ -150,6 +152,22 @@ xrd::AutoInit(L"MyGame-Win64-Shipping.exe");
 // 手动设置 RVA（AutoInit 前调用）
 xrd::SetGObjects(0x04952C50);
 xrd::SetGNames(0x04916900);
+```
+
+### 取消 AutoInit
+
+```cpp
+static std::atomic<bool> g_stopRequested = false;
+
+xrd::SetAutoInitCancelCallback([]() -> bool
+{
+    return g_stopRequested.load();
+});
+
+if (!xrd::AutoInitSharedMem(L"MyGame-Win64-Shipping.exe", L"ReiVMDrv"))
+{
+    // 如果回调返回 true，AutoInit 会立刻终止并自动 ResetContext()
+}
 ```
 
 ### 运行时数据访问
@@ -256,6 +274,8 @@ AutoInit()
 
 所有发现的偏移缓存在 `xrd::Ctx().off` (`UEOffsets` 结构体) 中，后续访问无需重复扫描。
 
+如果安装了 `SetAutoInitCancelCallback()`，那么重试等待和关键扫描阶段都会轮询该回调；一旦返回 `true`，当前初始化会立即终止并执行 `ResetContext()`。
+
 ---
 
 ## 线程安全
@@ -292,6 +312,7 @@ Xrd-eXternalrEsolve/
 │       │   └── memory_shmem.hpp                 #   SharedMemoryAccessor (共享内存, 多slot)
 │       ├── init/                                # 初始化流程
 │       │   ├── auto_init.hpp                    #   六阶段自动初始化入口
+│       │   ├── init_cancel.hpp                  #   AutoInit 取消回调
 │       │   ├── init_common.hpp                  #   公共扫描逻辑 + FVector 精度检测
 │       │   ├── init_chaos.hpp                   #   Chaos 偏移反射发现
 │       │   ├── init_world_chain.hpp             #   World 链偏移反射发现
@@ -307,6 +328,7 @@ Xrd-eXternalrEsolve/
 │       │   └── bones/                           #   骨骼系统
 │       │       ├── bones.hpp                    #     骨骼世界坐标 (双缓冲)
 │       │       ├── bones_batch.hpp              #     骨骼批量读取 & 过滤
+│       │       ├── bones_offsets.hpp            #     SkinnedMeshComponent 范围限定扫描
 │       │       └── bones_names.hpp              #     骨骼名称读取与缓存
 │       ├── physx/                               # PhysX 碰撞读取
 │       │   ├── physx_types.hpp                  #   PhysX 结构定义 & 偏移
@@ -339,8 +361,11 @@ Xrd-eXternalrEsolve/
 │       │   │   ├── scan_property_offsets_struct.hpp
 │       │   │   └── scan_property_offsets_typed.hpp
 │       │   └── runtime/                         #   运行时扫描
-│       │       ├── scan_process_event.hpp        #     ProcessEvent VTable 扫描
-│       │       ├── scan_append_string.hpp        #     AppendString 扫描
+│       │       ├── scan_process_event.hpp       #     ProcessEvent VTable 扫描
+│       │       ├── scan_append_string.hpp       #     AppendString 扫描
+│       │       ├── scan_exec_helpers.hpp        #     Exec/AppendString 扫描辅助
+│       │       ├── scan_runtime_common.hpp      #     运行时扫描公共入口
+│       │       ├── scan_signature_helpers.hpp   #     签名/字符串扫描辅助
 │       │       └── scan_bones.hpp               #     骨骼偏移扫描
 │       └── helpers/                             # SDK 导出 & 工具
 │           ├── w2s.hpp                          #   WorldToScreen / GetVPMatrix

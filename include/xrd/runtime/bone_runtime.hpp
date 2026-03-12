@@ -15,6 +15,7 @@ struct BoneRuntimeProbeResult
 
 inline void ResetBoneRuntimeState()
 {
+    std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
     auto& offsets = Ctx().off;
     offsets.ComponentToWorld_Offset = -1;
     offsets.ComponentSpaceTransforms_Offset = -1;
@@ -30,6 +31,7 @@ inline BoneRuntimeProbeResult ProbeBoneRuntime(uptr meshPtr)
         return result;
     }
 
+    std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
     PrecacheBoneNames(meshPtr);
 
     FTransform componentToWorld{};
@@ -44,7 +46,13 @@ inline BoneRuntimeProbeResult ProbeBoneRuntime(uptr meshPtr)
 
 inline bool RescanBoneRuntime(uptr meshPtr, BoneRuntimeProbeResult* outResult = nullptr)
 {
-    ResetBoneRuntimeState();
+    std::lock_guard<std::recursive_mutex> lock(detail::BoneRuntimeResolveMutex());
+    auto& offsets = Ctx().off;
+    offsets.ComponentToWorld_Offset = -1;
+    offsets.ComponentSpaceTransforms_Offset = -1;
+    offsets.RefSkeletonBoneInfo_Offset = -1;
+    ClearBoneCaches();
+
     BoneRuntimeProbeResult result = ProbeBoneRuntime(meshPtr);
     if (outResult)
     {
