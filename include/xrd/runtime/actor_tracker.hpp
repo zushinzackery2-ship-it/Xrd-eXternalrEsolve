@@ -134,6 +134,18 @@ public:
 
         for (std::size_t i = 0; i < unresolvedIndices.size(); ++i)
         {
+            if (IsCanonicalUserPtr(classPointers[i]))
+            {
+                continue;
+            }
+
+            // 共享内存批量读会把单项失败静默清零，但整批仍返回成功。
+            // 这里对失败项补一次单读，避免少量坏项把后半段 Actor 的类名整批抹掉。
+            ReadPtr(Mem(), classAddresses[i], classPointers[i]);
+        }
+
+        for (std::size_t i = 0; i < unresolvedIndices.size(); ++i)
+        {
             uptr actorPtr = actorPtrs[unresolvedIndices[i]];
             uptr classPtr = classPointers[i];
             if (!IsCanonicalUserPtr(classPtr))
