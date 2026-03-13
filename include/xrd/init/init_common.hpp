@@ -7,6 +7,7 @@
 #include "../core/process.hpp"
 #include "../core/process_sections.hpp"
 #include "../physx/physx_pe.hpp"
+#include "../engine/world/world_levels.hpp"
 #include "init_chaos.hpp"
 #include "init_world_chain.hpp"
 #include <iostream>
@@ -259,7 +260,7 @@ inline bool DoCommonScanAndDiscover()
     ctx.inited = true;
     std::cerr << "[xrd] ctx.inited = true\n";
 
-    // World 链偏移发现（必须在 InitChaosOffsets 之前，actor-walking 依赖 PersistentLevel/Actors 偏移）
+    // World 链偏移发现（必须在 InitChaosOffsets 之前，Loaded Levels / Actor 枚举依赖这些偏移）
     std::cerr << "[xrd] DiscoverWorldChainOffsets 开始...\n"; std::cerr.flush();
     DiscoverWorldChainOffsets(ctx);
     std::cerr << "[xrd] DiscoverWorldChainOffsets 完成\n"; std::cerr.flush();

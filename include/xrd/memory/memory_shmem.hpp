@@ -30,6 +30,7 @@ namespace ShmemConst
     inline constexpr u32 TotalSize     = PageCount * 4096;
     inline constexpr u32 DataOffset    = 0x100;           // 256 字节控制头
     inline constexpr u32 MaxData       = TotalSize - DataOffset;
+    inline constexpr u32 MaxSessions   = 10;              // 与驱动 MAX_SHMEM_SESSIONS 保持一致
     inline constexpr u32 SpinThreshold = 4000;            // 自旋迭代次数
     inline constexpr DWORD EventTimeoutMs = 50;           // Event 等待超时
 }

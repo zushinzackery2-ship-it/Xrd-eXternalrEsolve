@@ -6,6 +6,7 @@
 #include "../memory/memory.hpp"
 #include "../core/context.hpp"
 #include <set>
+#include <unordered_set>
 
 namespace xrd
 {
@@ -21,7 +22,7 @@ public:
     ChaosOffsets& Offsets() { return m_off; }
     const ChaosOffsets& Offsets() const { return m_off; }
 
-    // 从 UWorld 的 PersistentLevel 遍历所有 Actor，读取碰撞几何
+    // 从 UWorld 的已加载 Level 集合遍历所有 Actor，读取碰撞几何
     bool ReadStaticCollision(uptr worldPtr, CollisionScene& outScene) const
     {
         outScene.staticActors.clear();
@@ -32,44 +33,36 @@ public:
             return false;
         }
 
-        // UWorld -> PersistentLevel
-        uptr levelPtr = 0;
-        if (!ReadPtr(m_mem, worldPtr + m_ueOff.UWorld_PersistentLevel, levelPtr) ||
-            !IsCanonicalUserPtr(levelPtr))
+        std::vector<uptr> levelPtrs;
+        if (!ReadLoadedLevels(worldPtr, levelPtrs))
         {
-            std::cerr << "[xrd][Chaos] 无法读取 PersistentLevel\n";
+            std::cerr << "[xrd][Chaos] 无法枚举已加载 Levels\n";
             return false;
         }
 
-        // ULevel -> Actors (TArray<AActor*>)
-        uptr actorsData = 0;
-        i32 actorsCount = 0;
-        if (!ReadPtr(m_mem, levelPtr + m_ueOff.ULevel_Actors, actorsData) ||
-            !ReadValue(m_mem, levelPtr + m_ueOff.ULevel_Actors + 8, actorsCount))
-        {
-            std::cerr << "[xrd][Chaos] 无法读取 Actors 数组\n";
-            return false;
-        }
+        std::unordered_set<uptr> seenActors;
+        seenActors.reserve(8192);
 
-        if (!IsCanonicalUserPtr(actorsData) || actorsCount <= 0 || actorsCount > 100000)
+        for (uptr levelPtr : levelPtrs)
         {
-            return false;
-        }
-
-        // 批量读取 Actor 指针数组
-        std::vector<uptr> actorPtrs(actorsCount);
-        if (!m_mem.Read(actorsData, actorPtrs.data(), actorsCount * sizeof(uptr)))
-        {
-            return false;
-        }
-
-        for (uptr actorPtr : actorPtrs)
-        {
-            if (!IsCanonicalUserPtr(actorPtr))
+            std::vector<uptr> actorPtrs;
+            if (!ReadLevelActors(levelPtr, actorPtrs))
             {
                 continue;
             }
-            ProcessActor(actorPtr, outScene);
+
+            for (uptr actorPtr : actorPtrs)
+            {
+                if (!IsCanonicalUserPtr(actorPtr))
+                {
+                    continue;
+                }
+                if (!seenActors.insert(actorPtr).second)
+                {
+                    continue;
+                }
+                ProcessActor(actorPtr, outScene);
+            }
         }
 
         // 统计并输出实时诊断
@@ -99,6 +92,105 @@ private:
     const UEOffsets& m_ueOff;
     ChaosOffsets m_off;
     uptr m_moduleBase = 0;
+
+    void AppendUniqueLevel(
+        uptr levelPtr,
+        std::unordered_set<uptr>& seenLevels,
+        std::vector<uptr>& outLevels) const
+    {
+        if (!IsCanonicalUserPtr(levelPtr))
+        {
+            return;
+        }
+
+        if (seenLevels.insert(levelPtr).second)
+        {
+            outLevels.push_back(levelPtr);
+        }
+    }
+
+    bool ReadLoadedLevels(uptr worldPtr, std::vector<uptr>& outLevels) const
+    {
+        outLevels.clear();
+        if (!IsCanonicalUserPtr(worldPtr))
+        {
+            return false;
+        }
+
+        std::unordered_set<uptr> seenLevels;
+        seenLevels.reserve(16);
+
+        if (m_ueOff.UWorld_PersistentLevel != -1)
+        {
+            uptr persistentLevel = 0;
+            if (ReadPtr(m_mem, worldPtr + m_ueOff.UWorld_PersistentLevel, persistentLevel))
+            {
+                AppendUniqueLevel(persistentLevel, seenLevels, outLevels);
+            }
+        }
+
+        if (m_ueOff.UWorld_Levels != -1)
+        {
+            uptr levelsData = 0;
+            i32 levelsCount = 0;
+            if (ReadPtr(m_mem, worldPtr + m_ueOff.UWorld_Levels, levelsData) &&
+                ReadValue(m_mem, worldPtr + m_ueOff.UWorld_Levels + 8, levelsCount) &&
+                IsCanonicalUserPtr(levelsData) &&
+                levelsCount > 0 &&
+                levelsCount <= 4096)
+            {
+                std::vector<uptr> levelPtrs(static_cast<std::size_t>(levelsCount));
+                if (m_mem.Read(levelsData, levelPtrs.data(), levelPtrs.size() * sizeof(uptr)))
+                {
+                    for (uptr levelPtr : levelPtrs)
+                    {
+                        AppendUniqueLevel(levelPtr, seenLevels, outLevels);
+                    }
+                }
+            }
+        }
+
+        return !outLevels.empty();
+    }
+
+    bool ReadLevelActors(uptr levelPtr, std::vector<uptr>& outActors) const
+    {
+        outActors.clear();
+        if (!IsCanonicalUserPtr(levelPtr) || m_ueOff.ULevel_Actors < 0)
+        {
+            return false;
+        }
+
+        uptr actorsData = 0;
+        i32 actorsCount = 0;
+        if (!ReadPtr(m_mem, levelPtr + m_ueOff.ULevel_Actors, actorsData) ||
+            !ReadValue(m_mem, levelPtr + m_ueOff.ULevel_Actors + 8, actorsCount))
+        {
+            return false;
+        }
+
+        if (!IsCanonicalUserPtr(actorsData) || actorsCount <= 0 || actorsCount > 100000)
+        {
+            return false;
+        }
+
+        std::vector<uptr> rawActorPtrs(static_cast<std::size_t>(actorsCount));
+        if (!m_mem.Read(actorsData, rawActorPtrs.data(), rawActorPtrs.size() * sizeof(uptr)))
+        {
+            return false;
+        }
+
+        outActors.reserve(rawActorPtrs.size());
+        for (uptr actorPtr : rawActorPtrs)
+        {
+            if (IsCanonicalUserPtr(actorPtr))
+            {
+                outActors.push_back(actorPtr);
+            }
+        }
+
+        return !outActors.empty();
+    }
 
     // ─── Actor 处理 ───
 
@@ -145,7 +237,12 @@ private:
             return false;
         }
 
-        // FBodyInstance +0x08 -> TWeakObjectPtr<UBodySetup>
+        // FBodyInstance -> TWeakObjectPtr<UBodySetup>
+        if (m_off.BodyInstance_BodySetup < 0)
+        {
+            return false;
+        }
+
         i32 weakIdx = 0;
         if (!ReadValue(m_mem, bodyInstanceAddr + m_off.BodyInstance_BodySetup, weakIdx))
         {

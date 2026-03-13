@@ -114,6 +114,7 @@ struct UEOffsets
     // Actor/Pawn 链
     // UWorld -> OwningGameInstance -> LocalPlayers[0] -> PlayerController -> Pawn
     i32 UWorld_PersistentLevel                  = -1;
+    i32 UWorld_Levels                           = -1;
     i32 UWorld_OwningGameInstance               = -1;
     i32 UGameInstance_LocalPlayers              = -1;
     i32 ULocalPlayer_PlayerController           = -1;

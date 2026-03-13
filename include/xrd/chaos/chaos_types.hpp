@@ -10,57 +10,57 @@ namespace xrd
 {
 
 // ─── Chaos 偏移表 ───
-// [SDK] 标记的偏移由 AutoInit 反射发现
-// [引擎] 标记的偏移为引擎内部稳定布局
-// [扫描] 标记的偏移需运行时扫描验证
+// [反射] 优先从 UClass / UScriptStruct 发现，失败时退回稳定布局
+// [引擎] 依赖私有物理实现的稳定布局
+// [扫描] 需要运行时扫描验证
 
 struct ChaosOffsets
 {
-    // [SDK] UPrimitiveComponent::BodyInstance（反射发现）
+    // [反射] UPrimitiveComponent::BodyInstance
     i32 PrimComp_BodyInstance = -1;
 
-    // [引擎] FBodyInstance +0x08 -> TWeakObjectPtr<UBodySetup>
-    i32 BodyInstance_BodySetup = 0x08;
+    // [反射] FBodyInstance::BodySetup，失败时回退稳定布局
+    i32 BodyInstance_BodySetup = -1;
 
     // [扫描] FBodyInstance 尾部私有句柄 -> FSingleParticlePhysicsProxy*
     i32 BodyInstance_PhysicsProxy = -1;
 
-    // [SDK] UBodySetup::AggGeom（反射发现）
+    // [反射] UBodySetup::AggGeom
     i32 BodySetup_AggGeom = -1;
 
-    // [SDK] FKAggregateGeom 成员（反射发现，引擎布局可作 fallback）
-    i32 AggGeom_SphereElems  = 0x00;
-    i32 AggGeom_BoxElems     = 0x10;
-    i32 AggGeom_SphylElems   = 0x20;
-    i32 AggGeom_ConvexElems  = 0x30;
+    // [反射] FKAggregateGeom 成员，失败时退回稳定布局
+    i32 AggGeom_SphereElems  = -1;
+    i32 AggGeom_BoxElems     = -1;
+    i32 AggGeom_SphylElems   = -1;
+    i32 AggGeom_ConvexElems  = -1;
 
-    // [引擎] FKShapeElem 基类大小
-    i32 ShapeElem_BaseSize = 0x30;
+    // [反射] FKShapeElem 基类大小，失败时退回稳定布局
+    i32 ShapeElem_BaseSize = -1;
 
-    // [SDK/引擎] FKBoxElem 布局（基于 FKShapeElem 之后）
-    i32 BoxElem_Center   = 0x30;  // FVector (3x double)
-    i32 BoxElem_Rotation = 0x48;  // FRotator (3x double)
-    i32 BoxElem_X        = 0x60;  // float
-    i32 BoxElem_Y        = 0x64;  // float
-    i32 BoxElem_Z        = 0x68;  // float
-    i32 BoxElem_Size     = 0x70;  // sizeof(FKBoxElem) 估算
+    // [反射] FKBoxElem 布局，失败时退回稳定布局
+    i32 BoxElem_Center   = -1;
+    i32 BoxElem_Rotation = -1;
+    i32 BoxElem_X        = -1;
+    i32 BoxElem_Y        = -1;
+    i32 BoxElem_Z        = -1;
+    i32 BoxElem_Size     = -1;
 
-    // [SDK/引擎] FKSphereElem 布局
-    i32 SphereElem_Center = 0x30; // FVector (3x double)
-    i32 SphereElem_Radius = 0x48; // float
-    i32 SphereElem_Size   = 0x50; // sizeof(FKSphereElem) 估算
+    // [反射] FKSphereElem 布局，失败时退回稳定布局
+    i32 SphereElem_Center = -1;
+    i32 SphereElem_Radius = -1;
+    i32 SphereElem_Size   = -1;
 
-    // [SDK/引擎] FKSphylElem 布局（Capsule）
-    i32 SphylElem_Center   = 0x30; // FVector (3x double)
-    i32 SphylElem_Rotation = 0x48; // FRotator (3x double)
-    i32 SphylElem_Radius   = 0x60; // float
-    i32 SphylElem_Length   = 0x64; // float
-    i32 SphylElem_Size     = 0x70; // sizeof(FKSphylElem) 估算
+    // [反射] FKSphylElem 布局（Capsule），失败时退回稳定布局
+    i32 SphylElem_Center   = -1;
+    i32 SphylElem_Rotation = -1;
+    i32 SphylElem_Radius   = -1;
+    i32 SphylElem_Length   = -1;
+    i32 SphylElem_Size     = -1;
 
-    // [SDK/引擎] FKConvexElem 布局
-    i32 ConvexElem_VertexData = 0x30; // TArray<FVector>
-    i32 ConvexElem_IndexData  = 0x40; // TArray<int32>
-    i32 ConvexElem_Size       = 0x80; // sizeof(FKConvexElem) 估算
+    // [反射] FKConvexElem 布局，失败时退回稳定布局
+    i32 ConvexElem_VertexData = -1;
+    i32 ConvexElem_IndexData  = -1;
+    i32 ConvexElem_Size       = -1;
 
     // [引擎] FSingleParticlePhysicsProxy 布局
     i32 Proxy_Owner    = 0x08; // UObject* 回指
@@ -85,7 +85,7 @@ struct ChaosOffsets
     // [引擎] FPBDRigidsSolver 布局
     i32 Solver_PhysScene = 0x10;     // FPhysScene_Chaos* 回指
 
-    // [引擎] FBodyInstance 反射结构大小（从 UStruct::Size 获取）
+    // [反射] FBodyInstance 结构大小（从 UStruct::Size 获取）
     i32 BodyInstance_StructSize = -1;
 };
 

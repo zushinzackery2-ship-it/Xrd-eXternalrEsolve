@@ -43,6 +43,7 @@
 | **线程安全** | 名称缓存/属性偏移缓存均使用 `shared_mutex`，支持多线程并发读取 |
 | **SDK 导出** | 生成与 Dumper-7 格式对齐的 CppSDK，含 `#pragma pack` / `alignas` / trailing padding |
 | **World 链式访问** | `UWorld → GameInstance → LocalPlayers[0] → PlayerController → Pawn` 全链路偏移一次性缓存 |
+| **多 Level Actor 聚合** | `GetAllActors()` 汇总 `PersistentLevel + Levels` 中所有已加载关卡的 Actor，并做去重缓存 |
 | **FVector 精度自动检测** | 运行时区分 UE4 (float) / UE5 (double) |
 | **骨骼系统** | ComponentToWorld 自动扫描、双缓冲 ComponentSpaceTransforms、四元数合理性验证、按名称过滤式读取，并把骨骼数组扫描限制在 `USkinnedMeshComponent` 自身成员范围内 |
 | **W2S** | 内置 WorldToScreen 投影 |
@@ -71,7 +72,7 @@
 | **World** | `GetUWorld()` | 获取 UWorld 指针 |
 |  | `GetPlayerController()` | 链式获取本地 PlayerController |
 |  | `GetAPawn()` | 链式获取本地 Pawn |
-| **Actor** | `GetAllActors()` | 获取所有 Actor 指针 |
+| **Actor** | `GetAllActors()` | 汇总所有已加载 Level 的 Actor 指针并去重 |
 |  | `GetActorsOfClass(className)` | 按类名精确筛选 Actor |
 |  | `GetActorsOfClassContains(keyword)` | 按类名模糊筛选 Actor |
 |  | `IsActorOfClass(actor, className)` | 检查 Actor 是否属于指定类（含继承链） |
@@ -249,7 +250,7 @@ AutoInit()
 ├─ Phase 4: UField::Next 推导
 │
 ├─ Phase 5: 运行时扫描
-│   ├─ GWorld 定位 (UWorld → PersistentLevel → Actors 指针链验证)
+│   ├─ GWorld 定位 (UWorld + 已加载 Levels 的 Actor 链聚合验证)
 │   ├─ ProcessEvent VTable 索引扫描
 │   ├─ AppendString 扫描
 │   ├─ FVector 精度检测 (float / double)
@@ -258,6 +259,7 @@ AutoInit()
 └─ Phase 6: World 链偏移反射发现
     ├─ UWorld::OwningGameInstance
     ├─ UWorld::PersistentLevel
+    ├─ UWorld::Levels
     ├─ UGameInstance::LocalPlayers
     ├─ ULocalPlayer::PlayerController
     ├─ APlayerController::Pawn
@@ -305,6 +307,7 @@ Xrd-eXternalrEsolve/
 │       │   ├── auto_init.hpp                    #   六阶段自动初始化入口
 │       │   ├── init_cancel.hpp                  #   AutoInit 取消回调
 │       │   ├── init_common.hpp                  #   公共扫描逻辑 + FVector 精度检测
+│       │   ├── init_chaos_scan.hpp              #   Chaos 小偏移自动发现
 │       │   ├── init_chaos.hpp                   #   Chaos 偏移反射发现
 │       │   ├── init_world_chain.hpp             #   World 链偏移反射发现
 │       │   └── init_helpers.hpp                 #   初始化辅助工具
@@ -315,6 +318,8 @@ Xrd-eXternalrEsolve/
 │       │   │   └── objects_search.hpp           #     对象搜索 & 属性偏移缓存
 │       │   ├── world/                           #   游戏世界
 │       │   │   ├── world.hpp                    #     UWorld / ULevel / Actor 数组
+│       │   │   ├── world_access.hpp             #     World / Level 基础访问
+│       │   │   ├── world_levels.hpp             #     已加载 Level 聚合与 GetAllActors
 │       │   │   └── world_actors.hpp             #     PlayerController / Pawn / Actor 过滤
 │       │   └── bones/                           #   骨骼系统
 │       │       ├── bones.hpp                    #     骨骼世界坐标 (双缓冲)
@@ -327,6 +332,7 @@ Xrd-eXternalrEsolve/
 │       │   └── physx_pe.hpp                     #   PhysX DLL PE 解析 (RVA 定位)
 │       ├── chaos/                               # Chaos 碰撞读取
 │       │   ├── chaos_types.hpp                  #   Chaos 结构定义
+│       │   ├── chaos_reflection.hpp             #   Chaos 反射辅助
 │       │   └── chaos_reader.hpp                 #   ChaosReader 远程读取器
 │       ├── collision/                           # 碰撞线框
 │       │   └── collision_types.hpp              #   碰撞体类型与线框数据结构
@@ -358,26 +364,28 @@ Xrd-eXternalrEsolve/
 │       │       ├── scan_runtime_common.hpp      #     运行时扫描公共入口
 │       │       ├── scan_signature_helpers.hpp   #     签名/字符串扫描辅助
 │       │       └── scan_bones.hpp               #     骨骼偏移扫描
-│       └── helpers/                             # SDK 导出 & 工具
-│           ├── w2s.hpp                          #   WorldToScreen / GetVPMatrix
-│           └── dump/                            #   SDK 导出
-│               ├── dump_sdk.hpp                 #     SDK 导出主逻辑
-│               ├── dump_sdk_struct.hpp          #     Class/Struct 代码生成
-│               ├── dump_sdk_writer.hpp          #     文件写出
-│               ├── dump_sdk_func_gen.hpp        #     函数签名生成
-│               ├── dump_sdk_format.hpp          #     属性名格式化
-│               ├── dump_sdk_infra.hpp           #     导出基础设施
-│               ├── dump_type_resolve.hpp        #     类型名解析
-│               ├── dump_collect.hpp             #     属性收集
-│               ├── dump_deps.hpp                #     依赖分析
-│               ├── dump_dep_sort.hpp            #     拓扑排序
-│               ├── dump_prefix.hpp              #     StructEntry 定义
-│               ├── dump_predefined.hpp          #     预定义类型
-│               ├── dump_enum.hpp                #     枚举导出
-│               ├── dump_extra.hpp               #     Dump/Mapping 格式
-│               ├── dump_function_flags.hpp      #     函数标志位
-│               ├── dump_property_flags.hpp      #     属性标志位
-│               └── gen/                         #     预生成基础类型头文件 (11 个)
+│       ├── helpers/                             # SDK 导出 & 工具
+│       │   ├── w2s.hpp                          #   WorldToScreen / GetVPMatrix
+│       │   └── dump/                            #   SDK 导出
+│       │       ├── dump_sdk.hpp                 #     SDK 导出主逻辑
+│       │       ├── dump_sdk_struct.hpp          #     Class/Struct 代码生成
+│       │       ├── dump_sdk_writer.hpp          #     文件写出
+│       │       ├── dump_sdk_func_gen.hpp        #     函数签名生成
+│       │       ├── dump_sdk_format.hpp          #     属性名格式化
+│       │       ├── dump_sdk_infra.hpp           #     导出基础设施
+│       │       ├── dump_type_resolve.hpp        #     类型名解析
+│       │       ├── dump_collect.hpp             #     属性收集
+│       │       ├── dump_deps.hpp                #     依赖分析
+│       │       ├── dump_dep_sort.hpp            #     拓扑排序
+│       │       ├── dump_prefix.hpp              #     StructEntry 定义
+│       │       ├── dump_predefined.hpp          #     预定义类型
+│       │       ├── dump_enum.hpp                #     枚举导出
+│       │       ├── dump_extra.hpp               #     Dump/Mapping 格式
+│       │       ├── dump_function_flags.hpp      #     函数标志位
+│       │       ├── dump_property_flags.hpp      #     属性标志位
+│       │       └── gen/                         #     预生成基础类型头文件 (11 个)
+│       └── runtime/                             # 运行时缓存
+│           └── actor_enumeration_cache.hpp      #   Actor 全量枚举缓存
 ├── LICENSE                                      # MIT
 └── README.md
 ```

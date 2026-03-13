@@ -34,6 +34,8 @@ inline void DiscoverWorldChainOffsets(Context& ctx)
             off.UWorld_OwningGameInstance = GetPropertyOffsetByName(worldClass, "OwningGameInstance");
         if (off.UWorld_PersistentLevel == -1)
             off.UWorld_PersistentLevel = GetPropertyOffsetByName(worldClass, "PersistentLevel");
+        if (off.UWorld_Levels == -1)
+            off.UWorld_Levels = GetPropertyOffsetByName(worldClass, "Levels");
     }
 
     // GameInstance -> LocalPlayers
@@ -93,6 +95,7 @@ inline void DiscoverWorldChainOffsets(Context& ctx)
     std::cerr << "[xrd] World链偏移:\n";
     std::cerr << std::format("  OwningGameInstance:  +0x{:X}\n", off.UWorld_OwningGameInstance);
     std::cerr << std::format("  PersistentLevel:     +0x{:X}\n", off.UWorld_PersistentLevel);
+    std::cerr << std::format("  Levels:              +0x{:X}\n", off.UWorld_Levels);
     std::cerr << std::format("  LocalPlayers:        +0x{:X}\n", off.UGameInstance_LocalPlayers);
     std::cerr << std::format("  PlayerController:    +0x{:X}\n", off.ULocalPlayer_PlayerController);
     std::cerr << std::format("  Pawn:                +0x{:X}\n", off.APlayerController_Pawn);

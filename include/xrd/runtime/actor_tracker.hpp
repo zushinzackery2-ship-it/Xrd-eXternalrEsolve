@@ -3,6 +3,7 @@
 // 把场景检测、Actor 指针快照、类名缓存、玩家 Pawn 回退统一收口，避免上层重复实现。
 
 #include "scene_watch.hpp"
+#include "actor_enumeration_cache.hpp"
 #include "../engine/world/world_actors.hpp"
 #include "../helpers/w2s.hpp"
 #include <unordered_map>
@@ -22,6 +23,7 @@ struct PlayerActorState
 struct ActorTrackerSnapshot
 {
     bool actorsValid = false;
+    bool actorListRebuilt = false;
     SceneWatchResult scene{};
     std::vector<uptr> actorPtrs;
     PlayerActorState player;
@@ -38,32 +40,19 @@ public:
         if (out.scene.changed)
         {
             ResetActorCaches();
+            actorEnumerationCache.Reset();
             lastPlayerState = PlayerActorState{};
         }
 
-        ActorArray actorArray;
-        if (GetPersistentLevelActors(actorArray)
-            && actorArray.count > 0
-            && actorArray.count <= 100000)
-        {
-            std::vector<uptr> rawActorPtrs(static_cast<std::size_t>(actorArray.count));
-            if (Mem().Read(
-                actorArray.data,
-                rawActorPtrs.data(),
-                rawActorPtrs.size() * sizeof(uptr)))
-            {
-                out.actorPtrs.reserve(rawActorPtrs.size());
-                for (uptr actorPtr : rawActorPtrs)
-                {
-                    if (IsCanonicalUserPtr(actorPtr))
-                    {
-                        out.actorPtrs.push_back(actorPtr);
-                    }
-                }
+        out.actorsValid = actorEnumerationCache.Refresh(
+            out.scene.currentWorldPtr,
+            out.actorPtrs
+        );
+        out.actorListRebuilt = actorEnumerationCache.LastRefreshRebuilt();
 
-                PurgeActorClassCache(out.actorPtrs);
-                out.actorsValid = true;
-            }
+        if (out.actorListRebuilt && !out.actorPtrs.empty())
+        {
+            PurgeActorClassCache(out.actorPtrs);
         }
 
         UpdatePlayerState(out.player, out.scene.currentWorldPtr != 0);
@@ -74,6 +63,7 @@ public:
     {
         ResetSceneWatch(sceneWatchState);
         ResetActorCaches();
+        actorEnumerationCache.Reset();
         lastPlayerState = PlayerActorState{};
     }
 
@@ -279,6 +269,7 @@ private:
     }
 
     SceneWatchState sceneWatchState;
+    ActorEnumerationCache actorEnumerationCache;
     std::unordered_map<uptr, std::string> classNameCache;
     std::unordered_map<uptr, std::string> actorClassNameCache;
     PlayerActorState lastPlayerState;

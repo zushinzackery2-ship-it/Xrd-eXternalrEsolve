@@ -41,6 +41,8 @@
 #include "xrd/engine/objects/objects_search.hpp"
 // world: UWorld/Actor/Pawn
 #include "xrd/engine/world/world.hpp"
+#include "xrd/engine/world/world_access.hpp"
+#include "xrd/engine/world/world_levels.hpp"
 #include "xrd/engine/world/world_actors.hpp"
 // bones: 骨骼读取、批量操作、名称解析
 #include "xrd/engine/bones/bones.hpp"

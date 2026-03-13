@@ -2,7 +2,7 @@
 // Xrd-eXternalrEsolve - Actor 高层 API 与字段读取
 // 从 world.hpp 拆分：Actor 过滤、PlayerController/Pawn、字段便利函数
 
-#include "world.hpp"
+#include "world_levels.hpp"
 #include "../objects/objects_search.hpp"
 
 namespace xrd
