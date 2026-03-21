@@ -18,6 +18,11 @@ inline void SetAutoInitCancelCallback(AutoInitCancelCallback callback)
     AutoInitCancelCallbackStorage() = callback;
 }
 
+inline AutoInitCancelCallback GetAutoInitCancelCallback()
+{
+    return AutoInitCancelCallbackStorage();
+}
+
 namespace detail
 {
     inline bool IsAutoInitCancellationRequested()
